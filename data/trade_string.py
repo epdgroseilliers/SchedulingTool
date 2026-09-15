@@ -12,6 +12,8 @@ Written against these real strings:
     BPA sells 100MW LL ACS at JD for midc+3
     el paso buys 100mw H18-21 springer  $83
     BPA buys 50mw nws LL at midc for midc-3
+    APS sells 50MW ncs he17-22 at PV for $65 flow date 09/17
+    APS sells 50MW ncs he17-22 Mon only at PV for $65
 
 Each extractor scans the whole string and blanks out the span it claims, so
 field order never matters — only a few extractors run in a fixed order to
@@ -23,7 +25,7 @@ anything.
 """
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from difflib import get_close_matches
 import re
 
@@ -53,6 +55,7 @@ LOCATION_ALIASES = {
     "MALIN": "MALIN500",
     "NAVAJO": "NAVAJO500",
     "WESTWING": "WESTWING500",
+    "MATL": "MATL.NWMT"
 }
 
 INDEX_ALIASES = {
@@ -81,6 +84,26 @@ ACS_SOURCES = {
 
 # Our own side, as it appears in broker strings and in BilateralMarket.
 SELF_NAME = "MAG"
+
+# A bare weekday ("Mon", "Mon only") names a single flow date directly,
+# instead of the usual numeric flow date — the nearest occurrence of that
+# weekday on or after the trade date. Needed for e.g. a trade struck on a
+# Sunday that only covers the Monday, not both days. Monday=0 ... Sunday=6,
+# matching date.weekday(). Sorted longest-first so "monday" isn't cut short
+# by "mon" winning the alternation first.
+WEEKDAY_NAMES = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tues": 1, "tue": 1,
+    "wednesday": 2, "weds": 2, "wed": 2,
+    "thursday": 3, "thurs": 3, "thur": 3, "thu": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+_WEEKDAY_PATTERN = (
+    r"\b(" + "|".join(sorted(WEEKDAY_NAMES, key=len, reverse=True)) + r")\b"
+    r"(?:\s+only\b)?"
+)
 
 FUZZY_CUTOFF = 0.8
 
@@ -199,6 +222,12 @@ def _infer_year(month, day, today):
 def _premium(raw):
     """'+ .50' -> 0.5, '-3' -> -3.0."""
     return float(re.sub(r"\s+", "", raw))
+
+
+def _next_weekday_on_or_after(start, weekday_num):
+    """The nearest date >= `start` that falls on `weekday_num` (Monday=0).
+    Returns `start` itself when it already matches."""
+    return start + timedelta(days=(weekday_num - start.weekday()) % 7)
 
 
 _VERB_RE = r"\b(buys?|sells?|sold|bought)\b"
@@ -373,6 +402,12 @@ def parse_trade_string(
 ):
     """Parse a broker string into trade fields.
 
+    `today` anchors every relative date the string can carry — a bare
+    weekday ("Mon only") and the year of an MM/DD flow date both resolve
+    relative to it. Pass the trade's actual Trade Date here, not
+    necessarily the real wall-clock date: a trader back-entering a past
+    trade needs "Mon" to resolve against *that* date, not today's.
+
     Returns a ParsedTrade. When `errors` is non-empty the caller should fill
     nothing — a partly-filled form is worse than an obvious refusal.
     """
@@ -388,7 +423,7 @@ def parse_trade_string(
     _extract_price_and_index(scanner, indexes, result)
 
     m = scanner.take(
-        r"\bflow\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?"
+        r"\bflow(?:\s+date)?\s+(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?"
         r"(?:\s*-\s*(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?)?"
     )
     if m:
@@ -401,6 +436,14 @@ def parse_trade_string(
                 end = _infer_year(int(m.group(4)), int(m.group(5)), today) or start
             result.fields["start_date"] = ParsedField(start, m.group(0).strip())
             result.fields["end_date"] = ParsedField(end, m.group(0).strip())
+    else:
+        # No numeric flow date: a bare weekday ("Mon only") names a single
+        # date directly — the nearest occurrence on or after the trade date.
+        wd = scanner.take(_WEEKDAY_PATTERN)
+        if wd:
+            resolved = _next_weekday_on_or_after(today, WEEKDAY_NAMES[wd.group(1).lower()])
+            result.fields["start_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
+            result.fields["end_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
 
     m = scanner.take(r"\bwspp\s*sched(?:ule)?\s*([bc])\b")
     if m:
