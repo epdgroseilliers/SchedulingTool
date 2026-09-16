@@ -69,7 +69,7 @@ assert TIME_ZONE in TIME_ZONES, f"{TIME_ZONE!r} is not one of {TIME_ZONES}"
 # POR/PODs that legitimately settle against the MIDC index. The macro read
 # these from the sheet's AN5:AN27 range; fill them in here to turn the MIDC
 # coherence warning on (an empty list just skips that one check).
-MIDC_POR_PODS = ["JOHNDAY", "BC.US.BORDER", "BPAT.NWMT", "MATL.NWMT", "COLSTRIP", "AVAT.NWMT"]
+MIDC_POR_PODS = ["MIDC", "JOHNDAY", "BC.US.BORDER", "BPAT.NWMT", "MATL.NWMT", "COLSTRIP", "AVAT.NWMT"]
 
 # Pricing node -> POR/PODs that normally go with it. A mismatch is only a
 # warning: the macro asked "continue?" rather than refusing.

@@ -1,0 +1,132 @@
+"""domain.shapes — shape parsing is pure; build_schedule's on_peak/off_peak
+branches need the live WECC calendar (marked db), flat/custom don't."""
+
+from datetime import date
+
+import pytest
+
+from domain.shapes import build_schedule, generate_block_grid, parse_shape, shape_label
+
+
+class TestParseShape:
+    @pytest.mark.parametrize("alias,kind", [
+        ("HL", "on_peak"), ("hl", "on_peak"), ("on-peak", "on_peak"), ("ONPEAK", "on_peak"),
+        ("LL", "off_peak"), ("off-peak", "off_peak"), ("OFFPEAK", "off_peak"),
+        ("ATC", "flat"), ("flat", "flat"), ("24h", "flat"),
+    ])
+    def test_known_aliases(self, alias, kind):
+        assert parse_shape(alias) == (kind, None, None)
+
+    def test_hour_range(self):
+        assert parse_shape("7-22") == ("custom", 7, 22)
+
+    def test_hour_range_with_spaces(self):
+        assert parse_shape(" 7 - 22 ") == ("custom", 7, 22)
+
+    def test_single_hour(self):
+        assert parse_shape("14") == ("custom", 14, 14)
+
+    def test_blank_raises(self):
+        with pytest.raises(ValueError):
+            parse_shape("")
+        with pytest.raises(ValueError):
+            parse_shape(None)
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError):
+            parse_shape("banana")
+
+    def test_out_of_range_hour_raises(self):
+        with pytest.raises(ValueError):
+            parse_shape("0-25")
+
+    def test_start_after_end_raises(self):
+        with pytest.raises(ValueError):
+            parse_shape("22-7")
+
+
+class TestShapeLabel:
+    def test_hl_ll_atc_map_to_themselves(self):
+        assert shape_label("HL") == "HL"
+        assert shape_label("LL") == "LL"
+        assert shape_label("ATC") == "ATC"
+
+    def test_custom_range_has_no_label(self):
+        assert shape_label("7-22") is None
+
+    def test_invalid_shape_has_no_label(self):
+        assert shape_label("garbage") is None
+
+
+class TestBuildScheduleFlatAndCustom:
+    def test_flat_covers_every_hour_every_day(self):
+        start, end = date(2026, 9, 15), date(2026, 9, 16)
+        hours_by_date, excluded, missing = build_schedule(start, end, "flat", 25)
+        assert excluded == [] and missing == []
+        assert hours_by_date[start] == set(range(1, 25))
+        assert hours_by_date[end] == set(range(1, 25))
+
+    def test_custom_covers_the_given_range_every_day(self):
+        start, end = date(2026, 9, 15), date(2026, 9, 16)
+        hours_by_date, excluded, missing = build_schedule(start, end, "custom", 25, 7, 10)
+        assert hours_by_date[start] == {7, 8, 9, 10}
+        assert hours_by_date[end] == {7, 8, 9, 10}
+        assert excluded == [] and missing == []
+
+    def test_single_day(self):
+        d = date(2026, 9, 15)
+        hours_by_date, _, _ = build_schedule(d, d, "flat", 25)
+        assert set(hours_by_date) == {d}
+
+
+class TestGenerateBlockGridBadShape:
+    def test_bad_shape_reports_error_not_exception(self):
+        start = end = date(2026, 9, 15)
+        grid, excluded, missing, error = generate_block_grid(
+            start, end, [start], "garbage", 25
+        )
+        assert grid is None
+        assert error is not None
+        assert "garbage" in error
+
+
+class TestGenerateBlockGridCustom:
+    def test_custom_shape_builds_grid_without_db(self):
+        start, end = date(2026, 9, 15), date(2026, 9, 16)
+        dates = [start, end]
+        grid, excluded, missing, error = generate_block_grid(
+            start, end, dates, "7-9", 25
+        )
+        assert error is None
+        assert excluded == [] and missing == []
+        row = grid[grid["Date"] == start].iloc[0]
+        assert row["7"] == 25.0 and row["8"] == 25.0 and row["9"] == 25.0
+        assert row["10"] == 0.0
+
+
+@pytest.mark.db
+class TestBuildScheduleOnOffPeak:
+    """HL/LL consult the live WECC calendar to split peak/off-peak hours."""
+
+    def test_on_peak_uses_7_to_22_on_a_peak_day(self):
+        # A midweek day is virtually always a WECC peak day.
+        d = date(2026, 9, 15)  # Tuesday
+        hours_by_date, excluded, missing = build_schedule(d, d, "on_peak", 25)
+        assert not missing
+        if d not in excluded:
+            assert hours_by_date[d] == set(range(7, 23))
+
+    def test_off_peak_is_the_complement_of_on_peak(self):
+        d = date(2026, 9, 15)
+        on_hours, on_excluded, on_missing = build_schedule(d, d, "on_peak", 25)
+        off_hours, _, off_missing = build_schedule(d, d, "off_peak", 25)
+        assert not on_missing and not off_missing
+        if d not in on_excluded:
+            assert on_hours[d] | off_hours[d] == set(range(1, 25))
+            assert on_hours[d] & off_hours[d] == set()
+
+    def test_generate_block_grid_hl_shape_reaches_the_calendar(self):
+        d = date(2026, 9, 15)
+        grid, excluded, missing, error = generate_block_grid(d, d, [d], "HL", 25)
+        assert error is None
+        assert not missing

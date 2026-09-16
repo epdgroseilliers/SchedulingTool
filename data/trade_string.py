@@ -14,6 +14,8 @@ Written against these real strings:
     BPA buys 50mw nws LL at midc for midc-3
     APS sells 50MW ncs he17-22 at PV for $65 flow date 09/17
     APS sells 50MW ncs he17-22 Mon only at PV for $65
+    ABEX sells 2mw atc at Glacier for $28 sched B
+    NWMT sells 50mw HE18 at crossover for $45
 
 Each extractor scans the whole string and blanks out the span it claims, so
 field order never matters — only a few extractors run in a fixed order to
@@ -34,10 +36,9 @@ import re
 COUNTERPARTY_ALIASES = {
     "APS": "AZPS",
     "BPA": "BPAT",
-    "EPE": "EPE",
     "PGE": "PGEM",
     "SCE": "SCET",
-    "SRP": "SRP",
+    "NWMT": "NWDS"
 }
 
 LOCATION_ALIASES = {
@@ -52,10 +53,13 @@ LOCATION_ALIASES = {
     "MIDC": "MIDC",
     "FOURCORNERS": "FOURCORNE345",
     "4C": "FOURCORNE345",
+    "FC": "FOURCORNE345",
+    "FC345": "FOURCORNE345",
     "MALIN": "MALIN500",
     "NAVAJO": "NAVAJO500",
     "WESTWING": "WESTWING500",
-    "MATL": "MATL.NWMT"
+    "MATL": "MATL.NWMT",
+    "GLACIER": "GLWND1"
 }
 
 INDEX_ALIASES = {
@@ -445,7 +449,8 @@ def parse_trade_string(
             result.fields["start_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
             result.fields["end_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
 
-    m = scanner.take(r"\bwspp\s*sched(?:ule)?\s*([bc])\b")
+    # "wspp sched c", but also either word alone ("sched B", "wspp B").
+    m = scanner.take(r"\b(?:wspp\s*sched(?:ule)?|sched(?:ule)?|wspp)\s*([bc])\b")
     if m:
         result.fields["wspp_contract"] = ParsedField(
             m.group(1).upper(), m.group(0).strip()
@@ -457,11 +462,15 @@ def parse_trade_string(
     else:
         result.errors.append("No MW quantity found (expected something like '100MW').")
 
-    m = scanner.take(r"\bh(?:e)?\s*(\d{1,2})\s*-\s*(?:h(?:e)?\s*)?(\d{1,2})\b")
+    # The "-end" half is optional so a single hour ("HE18") is read as a
+    # one-hour shape, same as typing "18" alone into the Shape box does.
+    m = scanner.take(
+        r"\bh(?:e)?\s*(\d{1,2})(?:\s*-\s*(?:h(?:e)?\s*)?(\d{1,2}))?\b"
+    )
     if m:
-        result.fields["shape"] = ParsedField(
-            f"{int(m.group(1))}-{int(m.group(2))}", m.group(0).strip()
-        )
+        start_he, end_he = m.group(1), m.group(2)
+        shape_str = f"{int(start_he)}-{int(end_he)}" if end_he else str(int(start_he))
+        result.fields["shape"] = ParsedField(shape_str, m.group(0).strip())
     else:
         m = scanner.take(r"\b(hl|ll|atc)\b")
         if m:
