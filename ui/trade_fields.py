@@ -25,22 +25,25 @@ from domain.options import (
 )
 from domain.trade import rare_fields_set
 from ui.paste import render_paste_input
-from ui.session import widget_defaults
+from ui.session import queue_form_reset, widget_defaults
 
 
 def render_entry_row():
-    """Trade Date, IsDAM, and the broker-string paste box, side by side.
+    """Trade Date, IsDAM, the broker-string paste box, and a Clear button,
+    side by side.
 
     Trade Date almost never differs from today, and IsDAM drives the
     Schedule section's default flow date — both are context the paste
     shouldn't need to touch, which is why they sit beside it rather than
-    below it. Call ui.paste.render_paste_summary() after this to show
-    what the paste was understood as (full width, not squeezed into a
-    column).
+    below it, and why Clear leaves them alone too. Call
+    ui.paste.render_paste_summary() after this to show what the paste was
+    understood as (full width, not squeezed into a column).
 
     Returns (trade_date, is_dam).
     """
-    top1, top2, top3 = st.columns([1.5, .5, 7], vertical_alignment="bottom")
+    top1, top2, top3, top4 = st.columns(
+        [1.5, .5, 6.2, .8], vertical_alignment="bottom"
+    )
     trade_date = top1.date_input(
         "Trade Date", key="trade_date", help="Date the deal was struck.",
         **widget_defaults("trade_date", value=date.today()),
@@ -54,6 +57,12 @@ def render_entry_row():
         **widget_defaults("is_dam", value=True),
     )
     render_paste_input(top3)
+    if top4.button(
+        "Clear", type="primary", key="clear_form_btn", width="stretch",
+        help="Reset every entry field to its default. Trade Date and IsDAM are left as-is.",
+    ):
+        queue_form_reset()
+        st.rerun()
     return trade_date, is_dam
 
 

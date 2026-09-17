@@ -14,7 +14,13 @@ from domain.grid import (
 )
 from domain.shapes import dam_default_end_date, generate_block_grid, shape_to_he
 from domain.trade import default_block_start
-from ui.session import block_grid_key, get_version, version_key, widget_defaults
+from ui.session import (
+    block_grid_key,
+    dates_last_default_keys,
+    get_version,
+    version_key,
+    widget_defaults,
+)
 
 DATE_EDITOR_ROW_HEIGHT = 20
 
@@ -51,10 +57,6 @@ def get_block_grid(bid, dates, shape, mw):
     grid = make_block_grid(dates, mw_by_date)
     st.session_state[block_grid_key(bid)] = grid
     return grid
-
-
-def dates_last_default_keys(bid):
-    return f"dates_last_default_start_{bid}", f"dates_last_default_end_{bid}"
 
 
 def sync_block_dates(bid, default_start, default_end):

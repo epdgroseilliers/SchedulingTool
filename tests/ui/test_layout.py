@@ -21,21 +21,23 @@ class TestEntryRow:
         at = AppTest.from_file(APP_PATH, default_timeout=90).run()
         assert not at.exception, [e.value for e in at.exception]
 
-    def test_trade_date_isdam_and_paste_box_are_one_row(self):
+    def test_trade_date_isdam_paste_box_and_clear_are_one_row(self):
         at = AppTest.from_file(APP_PATH, default_timeout=90).run()
 
         def find_row(node):
             for child in node:
                 if type(child).__name__ == "Block":
                     cols = [c for c in child.children.values() if type(c).__name__ == "Column"]
-                    if len(cols) == 3:
+                    if len(cols) == 4:
                         leaf_labels = []
                         for c in cols:
                             for leaf in c.children.values():
                                 if hasattr(leaf, "label"):
                                     leaf_labels.append(leaf.label)
                                     break
-                        if leaf_labels == ["Trade Date", "IsDAM", "Paste broker string"]:
+                        if leaf_labels == [
+                            "Trade Date", "IsDAM", "Paste broker string", "Clear",
+                        ]:
                             return child
                 kids = getattr(child, "children", None)
                 if kids:
@@ -45,7 +47,9 @@ class TestEntryRow:
             return None
 
         row = find_row(at.main)
-        assert row is not None, "Trade Date / IsDAM / paste box are not one row"
+        assert row is not None, (
+            "Trade Date / IsDAM / paste box / Clear are not one row"
+        )
 
     def test_entry_row_columns_are_bottom_aligned(self):
         at = AppTest.from_file(APP_PATH, default_timeout=90).run()

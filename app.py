@@ -16,7 +16,7 @@ from ui.actions import (
 from ui.paste import render_paste_summary
 from ui.preview import render_preview_panel
 from ui.schedule import render_schedule_section
-from ui.session import flush_flash, init_session_state
+from ui.session import apply_pending_form_reset, flush_flash, init_session_state
 from ui.trade_fields import (
     render_economics_row,
     render_entry_row,
@@ -26,6 +26,7 @@ from ui.trades_list import render_trades_list
 
 st.set_page_config(page_title="Trade Scheduler", page_icon="⚡", layout="wide")
 init_session_state()
+apply_pending_form_reset()
 
 st.title("⚡ Add Trade")
 flush_flash()

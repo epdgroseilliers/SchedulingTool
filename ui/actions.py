@@ -18,7 +18,7 @@ from data.bilateral import (
 from domain.options import TIME_ZONE
 from domain.shapes import monthly_block_rows, shape_label
 from domain.trade import db_input_errors, db_input_warnings
-from ui.session import push_flash
+from ui.session import push_flash, queue_form_reset
 
 
 def render_action_row():
@@ -237,14 +237,12 @@ def _insert_and_save(trade, resolved_rows, input_in_db):
         for problem in failed:
             push_flash("warning", f"Trade saved, but a folder could not be created: {problem}")
 
-    st.session_state.db_preview = None
     trade["db_trade_ids"] = db_trade_ids
     st.session_state.trades.append(trade)
-    # Schedule blocks (dates, shape, MW, grid) are deliberately left as-is —
-    # booking several trades against the same schedule is a common desk
-    # workflow, and re-entering it every time isn't. Trader-facing fields
-    # above the Schedule section persist too, simply because nothing here
-    # clears their widget state either.
+    # Every entry field resets to its default once the trade is safely in
+    # st.session_state.trades — Trade Date and IsDAM are the only fields
+    # left as-is, since those are context the trader sets once per session.
+    queue_form_reset()
     if input_in_db:
         for note in db_input_warnings(trade):
             push_flash("warning", note)

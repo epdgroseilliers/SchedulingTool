@@ -45,29 +45,31 @@ class TestLocalOnlyAddTrade:
         assert trade["counterparty"] == "AZPS"
         assert trade["db_trade_ids"] == []
 
-    def test_schedule_and_form_persist_after_a_local_submit(self):
-        # Deliberate design choice (see ui.actions._insert_and_save):
-        # booking several trades against the same schedule is a common
-        # desk workflow, so nothing is reset after Add Trade.
+    def test_form_resets_to_defaults_after_a_local_submit(self):
+        # Deliberate design choice (see ui.actions._insert_and_save /
+        # ui.session.reset_trade_fields): every entry field goes back to
+        # its default once the trade is saved — Trade Date and IsDAM are
+        # the only fields left as-is.
         at = _run()
+        trade_date, is_dam = at.session_state["trade_date"], at.session_state["is_dam"]
         _fill_minimal_trade(at)
-        grid_before = at.dataframe[0].value.copy()
         [b for b in at.button if b.label == "Add Trade"][0].click().run()
 
-        assert at.session_state["counterparty"] == "AZPS"
-        assert at.session_state["location"] == "PALOVERDE500"
+        assert at.session_state["trade_date"] == trade_date
+        assert at.session_state["is_dam"] == is_dam
+        assert at.session_state["counterparty"] is None
+        assert at.session_state["location"] is None
         assert at.session_state["block_ids"] == [0]
-        import pandas as pd
-        pd.testing.assert_frame_equal(
-            grid_before.reset_index(drop=True),
-            at.dataframe[0].value.reset_index(drop=True),
-        )
+        assert at.session_state["shape_0"] == "HL"
+        assert at.session_state["mw_0"] == 25
 
     def test_two_trades_can_be_added_in_a_row(self):
         at = _run()
         _fill_minimal_trade(at)
         [b for b in at.button if b.label == "Add Trade"][0].click().run()
-        at.selectbox(key="counterparty").set_value("BPAT").run()
+        # The form reset after the first submit, so both required fields
+        # need refilling — same as a trader starting the next trade fresh.
+        _fill_minimal_trade(at, counterparty="BPAT", location="MIDC")
         [b for b in at.button if b.label == "Add Trade"][0].click().run()
         assert len(at.session_state["trades"]) == 2
         assert at.session_state["trades"][0]["counterparty"] == "AZPS"
@@ -218,8 +220,23 @@ class TestMonthlyTrades:
         _fill_minimal_trade(at)
         self._set_monthly(at)
         [b for b in at.button if b.label == "Add Trade"][0].click().run()
-        assert any("Monthly" in e.label for e in at.expander)
-        assert not at.dataframe
+        monthly_expanders = [e for e in at.expander if "Monthly" in e.label]
+        assert monthly_expanders
+
+        def has_dataframe(node):
+            for child in node:
+                if type(child).__name__ == "Dataframe":
+                    return True
+                kids = getattr(child, "children", None)
+                if kids and has_dataframe(kids.values()):
+                    return True
+            return False
+
+        # The trades-list expander for a monthly trade must show no wide
+        # hourly grid — unlike the (unrelated) Schedule section above it,
+        # which is back to a fresh, non-monthly block after the reset that
+        # follows Add Trade and so has a dataframe of its own.
+        assert not has_dataframe(monthly_expanders[0].children.values())
 
 
 class TestRealInsertPathIsMocked:

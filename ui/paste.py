@@ -18,7 +18,7 @@ from domain.options import (
     SPECIFIED_SOURCES,
 )
 from domain.trade import format_price
-from ui.schedule import dates_last_default_keys
+from ui.session import dates_last_default_keys
 
 
 def apply_parsed_string(text):
