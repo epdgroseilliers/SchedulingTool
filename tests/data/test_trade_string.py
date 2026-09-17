@@ -180,6 +180,11 @@ class TestRealExamples:
         assert r.get("end_date") == date(2028, 7, 31)
         assert r.get("is_monthly") is True
 
+    def test_example_13_communication_shorthand(self):
+        r = parse("APS sells 50MW ncs he17-22 at PV for $65 via BGC")
+        assert r.ok, r.errors
+        assert r.get("communication") == "Broker - BGC"
+
 
 # --- Single-hour shapes (no dash) ------------------------------------------
 
@@ -450,6 +455,38 @@ class TestBareIndexAndNonCaiso:
         assert r.ok, r.errors
         assert r.get("is_source_non_caiso") is True
         assert not r.warnings
+
+
+class TestCommunicationShorthand:
+    @pytest.mark.parametrize("token,expected", [
+        ("Itap", "ITAP"),
+        ("Ice", "ICE"),
+        ("BGC", "Broker - BGC"),
+        ("Equus", "Broker - Equus"),
+        ("emilio", "Phone - Emilio"),
+        ("thomas", "Phone - Thomas"),
+        ("chat", "ICE Chat"),
+    ])
+    def test_each_keyword_resolves(self, token, expected):
+        r = parse(f"AZPS sells 10MW HL PALOVERDE500 FIXED $5 {token}")
+        assert r.ok, r.errors
+        assert r.get("communication") == expected
+
+    def test_ice_chat_phrase_is_not_split_into_bare_ice(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 ICE Chat")
+        assert r.get("communication") == "ICE Chat"
+
+    def test_via_prefix_is_consumed(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 via BGC")
+        assert r.get("communication") == "Broker - BGC"
+        assert not any("via" in w for w in r.warnings)
+
+    def test_absent_leaves_communication_unset(self):
+        # No default is applied here — that's the caller's job (see
+        # ui.paste.apply_parsed_string, which falls back to "ICE Chat").
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5")
+        assert r.get("communication") is None
+        assert "communication" not in r.fields
 
 
 # --- Order independence -----------------------------------------------------

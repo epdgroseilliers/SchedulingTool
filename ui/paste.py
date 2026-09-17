@@ -54,9 +54,9 @@ def apply_parsed_string(text):
     # Trade Date is left alone: it's set as context above, before pasting,
     # not something the string should override.
 
-    # Constant for pasted strings; the rest fall back to their defaults when
-    # the string doesn't mention them.
-    st.session_state.communication = PARSED_COMMUNICATION
+    # Every broker string is pasted from ICE Chat by default; the string can
+    # name a different method (a broker, or a specific phone contact).
+    st.session_state.communication = parsed.get("communication", PARSED_COMMUNICATION)
     st.session_state.wspp_contract = parsed.get("wspp_contract", DEFAULT_WSPP_CONTRACT)
     st.session_state.specified_source = parsed.get(
         "specified_source", DEFAULT_SPECIFIED_SOURCE
@@ -112,6 +112,8 @@ def apply_parsed_string(text):
         summary["lines"].append("IsSourceNonCaiso")
     if st.session_state.rare_fields["is_monthly"]:
         summary["lines"].append("IsMonthly")
+    if st.session_state.communication != PARSED_COMMUNICATION:
+        summary["lines"].append(f"via {st.session_state.communication}")
     st.session_state.parse_summary = summary
 
 

@@ -19,6 +19,7 @@ Written against these real strings:
     MAG buys from Conoco 75mw of Non-caiso power for Q3 HL 2027 at PV index + 9.5
     NEVP buys 25mw he17-22 ncs Jul-Aug 28 at Navajo for $216
     NEVP buys 25mw he17-22 ncs Jul 28 at Navajo for $230
+    APS sells 50MW ncs he17-22 at PV for $65 via BGC
 
 Each extractor scans the whole string and blanks out the span it claims, so
 field order never matters — only a few extractors run in a fixed order to
@@ -89,6 +90,28 @@ ACS_SOURCES = {
     "TPWP": "Tacoma Power - ACS",
     "SCLM": "Seattle City Light - ACS",
 }
+
+# How the trade was communicated, matched case-insensitively against the
+# desk's shorthand for each Communication option. "ice chat" (the two-word
+# phrase) is listed ahead of the bare "ice"/"chat" tokens it's made of, and
+# sorted longest-first below, so it wins over either alone.
+COMMUNICATION_ALIASES = {
+    "itap": "ITAP",
+    "ice chat": "ICE Chat",
+    "ice": "ICE",
+    "bgc": "Broker - BGC",
+    "equus": "Broker - Equus",
+    "tullett": "Broker - Tullett",
+    "emilio": "Phone - Emilio",
+    "thomas": "Phone - Thomas",
+    "charles": "Phone - Charles",
+    "byron": "Phone - Byron",
+    "chat": "ICE Chat",
+    "email": "Email"
+}
+_COMMUNICATION_PATTERN = (
+    r"\b(?:via\s+)?(" + "|".join(sorted(COMMUNICATION_ALIASES, key=len, reverse=True)) + r")\b"
+)
 
 # Our own side, as it appears in broker strings and in BilateralMarket.
 SELF_NAME = "MAG"
@@ -643,6 +666,11 @@ def parse_trade_string(
     m = scanner.take(r"\b(?:of\s+)?(?:ncs|non[-\s]?caiso)\b(?:\s+power\b)?")
     if m:
         result.fields["is_source_non_caiso"] = ParsedField(True, m.group(0).strip())
+
+    m = scanner.take(_COMMUNICATION_PATTERN)
+    if m:
+        value = COMMUNICATION_ALIASES[m.group(1).lower()]
+        result.fields["communication"] = ParsedField(value, m.group(0).strip())
 
     acs = scanner.take(r"\bacs\b")
 

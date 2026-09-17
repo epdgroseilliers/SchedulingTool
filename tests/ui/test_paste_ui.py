@@ -64,6 +64,7 @@ class TestFillsFormOnCleanParse:
         assert ss["price"] == 3.0
         assert ss["specified_source"] == "Bonneville Power Administration"
         assert ss["wspp_contract"] == "C"  # absent in string -> default
+        assert ss["communication"] == "ICE Chat"  # absent in string -> default
 
     def test_example_5_nws_flag_and_sell_direction(self):
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()
@@ -169,6 +170,19 @@ class TestWsppFormsThroughTheApp:
         assert at.session_state["counterparty"] == "ABEX"
         assert at.session_state["location"] == "GLWND1"
         assert at.session_state["wspp_contract"] == "B"
+
+
+class TestCommunicationThroughTheApp:
+    def test_broker_keyword_sets_communication(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "APS sells 50MW ncs he17-22 at PV for $65 via BGC")
+        assert not at.error, [e.value for e in at.error]
+        assert at.session_state["communication"] == "Broker - BGC"
+
+    def test_defaults_to_ice_chat_when_absent(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "APS sells 50MW ncs he17-22 at PV for $65")
+        assert at.session_state["communication"] == "ICE Chat"
 
 
 class TestFromCounterpartyAndMonthlyFlagThroughTheApp:
