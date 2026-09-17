@@ -17,7 +17,8 @@ from domain.options import (
     PARSED_COMMUNICATION,
     SPECIFIED_SOURCES,
 )
-from domain.trade import format_price
+from domain.shapes import dam_default_end_date
+from domain.trade import default_block_start, format_price
 from ui.session import dates_last_default_keys
 
 
@@ -90,13 +91,25 @@ def apply_parsed_string(text):
         st.session_state.start_0 = start
         st.session_state.end_0 = parsed.get("end_date", start)
     else:
-        # No flow date in the string: clear the dates so they fall back to
-        # the IsDAM-driven WECC default for a fresh block.
-        for key in (
-            "start_0", "end_0",
-            *dates_last_default_keys(0),
-        ):
-            st.session_state.pop(key, None)
+        # No flow date in the string: recompute the same IsDAM/calendar-
+        # driven default a fresh block would get, and set it directly.
+        # Popping the keys and relying on render_schedule_section's own
+        # value= fallback doesn't work here — date_input's value= kwarg is
+        # only ever honored the very first time a widget with a given key
+        # is created, and Start/End Date have already rendered many times
+        # over by this point, so that fallback silently leaves the
+        # displayed dates stuck at whatever they last were.
+        is_dam = st.session_state.get("is_dam", True)
+        default_start = default_block_start(trade_date, is_dam)
+        default_end = (
+            dam_default_end_date(default_start, parsed.get("shape"))
+            if is_dam else default_start
+        )
+        st.session_state.start_0 = default_start
+        st.session_state.end_0 = default_end
+        last_start_key, last_end_key = dates_last_default_keys(0)
+        st.session_state[last_start_key] = default_start
+        st.session_state[last_end_key] = default_end
 
     price_text = format_price(parsed.get("index"), float(parsed.get("price")))
     summary["lines"] = [

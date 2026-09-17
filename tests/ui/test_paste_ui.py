@@ -183,6 +183,46 @@ class TestNoDateWithIsDamFollowsCalendar:
         assert ss["start_0"] == expected_start
         assert ss["end_0"] == dam_default_end_date(expected_start, "HL")
 
+    def test_reverting_to_a_dateless_string_recomputes_the_calendar_default(self):
+        # The reported bug: paste a dateless string (correct, multi-day
+        # default) -> paste one with an explicit weekday (correctly
+        # collapses to one day) -> paste the original dateless string
+        # again. end_0 must go back to the calendar default, not get stuck
+        # at the single day from the explicit-weekday string.
+        #
+        # ui.paste.apply_parsed_string used to just pop start_0/end_0 here
+        # and rely on ui.schedule's date_input(..., value=...) fallback to
+        # re-establish them — but that value= is only ever honored the
+        # very first time a widget with a given key is created, and
+        # start_0/end_0 have already rendered by this point, so in a real
+        # browser the fields silently stuck at their previous value. Now
+        # apply_parsed_string recomputes and assigns the default directly.
+        # NOTE: AppTest does not reproduce that "value= already claimed"
+        # quirk at all (verified: this exact sequence still passed against
+        # the old, buggy implementation) — this test instead locks in that
+        # apply_parsed_string's own computation is correct, which is the
+        # part that actually matters and the part a regression could break.
+        from domain.shapes import dam_default_end_date
+
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        trade_date = at.session_state["trade_date"]
+        dateless = "EPE buys 100mw he17-22 springer $88"
+        expected_start = trade_date + timedelta(days=1)
+        expected_end = dam_default_end_date(expected_start, "17-22")
+        assert expected_end > expected_start, (
+            "test needs a real multi-day calendar run to be meaningful"
+        )
+
+        _paste(at, dateless)
+        assert at.session_state["end_0"] == expected_end
+
+        _paste(at, "EPE buys 100mw he17-22 Fri only springer $88")
+        assert at.session_state["start_0"] == at.session_state["end_0"]
+
+        _paste(at, dateless)
+        assert at.session_state["start_0"] == expected_start
+        assert at.session_state["end_0"] == expected_end
+
     def test_custom_shape_default_also_follows_the_calendar(self):
         from domain.shapes import dam_default_end_date
 

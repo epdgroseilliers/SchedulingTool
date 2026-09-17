@@ -82,6 +82,34 @@ class TestClearButton:
         assert len(grid) >= 1
         assert (grid.drop(columns=["Date"]) >= 0).all().all()
 
+    def test_start_and_end_date_are_directly_reset_not_left_absent(self):
+        # reset_trade_fields sets start_0/end_0 directly (computed from the
+        # still-current Trade Date/IsDAM) rather than popping them and
+        # relying on ui.schedule's date_input(..., value=...) fallback —
+        # that value= is only ever honored the very first time a widget
+        # with a given key is created, and start_0/end_0 already have been
+        # by the time Clear is ever clicked, so in a real browser popping
+        # them would silently leave the fields stuck at their prior value.
+        # NOTE: AppTest does not reproduce that "value= already claimed"
+        # quirk (confirmed separately in tests/ui/test_paste_ui.py) — this
+        # checks the values are the right ones and set unconditionally,
+        # which is the part that actually matters.
+        from domain.shapes import dam_default_end_date
+        from domain.trade import default_block_start
+
+        at = _run()
+        trade_date, is_dam = at.session_state["trade_date"], at.session_state["is_dam"]
+        expected_start = default_block_start(trade_date, is_dam)
+        expected_end = dam_default_end_date(expected_start, "HL")
+
+        at.text_input(key="paste_box").set_value(
+            "EPE buys 100mw he17-22 Fri only springer $88"
+        ).run()
+        _click_clear(at)
+        ss = at.session_state
+        assert ss["start_0"] == expected_start
+        assert ss["end_0"] == expected_end
+
     def test_resets_is_monthly(self):
         at = _run()
         [c for c in at.checkbox if c.label == "IsMonthly"][0].set_value(True).run()
