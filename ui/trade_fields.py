@@ -95,11 +95,18 @@ def render_economics_row():
     index_name = c4.selectbox(
         "Index",
         INDEXES,
+        # index=None (not widget_defaults' usual omit-once-set) every run,
+        # not just the first: that's what keeps this box clearable back to
+        # blank — Streamlit only shows the clear affordance while a
+        # selectbox is created with index=None, and the parser writing
+        # index_name via the Session State API means this can log that
+        # policy warning right after a paste. Worth it: without it, once
+        # any value is set the field can never be cleared again.
+        index=None,
         placeholder="None (fixed price)",
         key="index_name",
         accept_new_options=True,
         help="Leave blank for a flat fixed price.",
-        **widget_defaults("index_name", index=None),
     )
     price = c5.number_input(
         "Price / Premium",

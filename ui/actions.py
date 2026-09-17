@@ -16,7 +16,7 @@ from data.bilateral import (
     resolve_and_validate,
 )
 from domain.options import TIME_ZONE
-from domain.shapes import shape_label
+from domain.shapes import monthly_block_rows, shape_label
 from domain.trade import db_input_errors, db_input_warnings
 from ui.session import push_flash
 
@@ -54,7 +54,7 @@ def render_past_date_gate(trade_date, block_ranges, input_in_db):
     """
     today = date.today()
     past_dated = trade_date < today or any(
-        s < today or e < today for s, e in block_ranges
+        s < today or e < today for s, e in block_ranges.values()
     )
     past_confirmed = False
     if input_in_db and past_dated:
@@ -107,6 +107,8 @@ def handle_submit(
     trade_fields,
     block_grids,
     block_shapes,
+    block_ranges,
+    block_mws,
     add_trade_clicked,
     preview_clicked,
     input_in_db,
@@ -131,31 +133,50 @@ def handle_submit(
     if not trade_fields["location"]:
         errors.append("Location is required.")
 
-    schedule, block_schedules, dup_errors = _flatten_schedule(block_grids)
-    errors += dup_errors
-    if not schedule:
-        errors.append("Schedule needs at least one hour with MW > 0.")
+    is_monthly = bool(trade_fields.get("is_monthly"))
+    block_schedules = {}
+    if is_monthly:
+        # A fixed MW for the whole period needs no hourly grid — each
+        # block is already exactly the row that gets written, so there's
+        # no per-hour schedule to flatten or fold back down.
+        blocks = [
+            (*block_ranges[bid], block_shapes.get(bid, ""), block_mws.get(bid))
+            for bid in block_shapes
+        ]
+        schedule = []
+        db_rows, shape_errors = monthly_block_rows(blocks)
+        errors += shape_errors
+        if not db_rows:
+            errors.append("At least one schedule block is required.")
+    else:
+        schedule, block_schedules, dup_errors = _flatten_schedule(block_grids)
+        errors += dup_errors
+        if not schedule:
+            errors.append("Schedule needs at least one hour with MW > 0.")
+        db_rows = []
 
     trade = {
         **trade_fields,
         "schedule": schedule,
         "time_zone": TIME_ZONE,
     }
+    if is_monthly:
+        trade["monthly_blocks"] = db_rows if not errors else []
 
     # Everything the DB needs is checked before a single row is written, the
     # way the macro validated every sheet row before importing any of them.
     # Preview runs this same path — it just stops short of insert_trade() —
     # so what you see previewed is exactly what a real submit would attempt.
     run_db_path = input_in_db or preview_clicked
-    db_rows = []
     if run_db_path and not errors:
-        # Compressed per block, so each block's Shape can name its He the way
-        # the existing rows do ('HL' rather than '7-22').
-        for bid, block_schedule in block_schedules.items():
-            db_rows += compress_schedule(
-                block_schedule, shape_label(block_shapes.get(bid))
-            )
-        db_rows.sort(key=lambda r: (r["start_date"], r["he"]))
+        if not is_monthly:
+            # Compressed per block, so each block's Shape can name its He
+            # the way the existing rows do ('HL' rather than '7-22').
+            for bid, block_schedule in block_schedules.items():
+                db_rows += compress_schedule(
+                    block_schedule, shape_label(block_shapes.get(bid))
+                )
+            db_rows.sort(key=lambda r: (r["start_date"], r["he"]))
         # Preview bypasses the past-date confirmation gate: it's a "would
         # this block a real insert" note, not something previewing itself
         # should be blocked on — the checkbox that clears it only renders

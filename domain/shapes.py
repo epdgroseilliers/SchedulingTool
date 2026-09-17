@@ -66,6 +66,48 @@ def shape_label(shape_str):
     return SHAPE_KIND_LABELS.get(kind)
 
 
+def shape_to_he(shape_str):
+    """The He text for a block that skips the hourly grid entirely — a
+    monthly-or-longer trade's MW is fixed for the whole period, so the
+    shape is stored as written rather than expanded against the WECC
+    peak calendar. Raises ValueError on an unparseable shape, same as
+    parse_shape.
+    """
+    kind, start_he, end_he = parse_shape(shape_str)
+    if kind in SHAPE_KIND_LABELS:
+        return SHAPE_KIND_LABELS[kind]
+    return str(start_he) if start_he == end_he else f"{start_he}-{end_he}"
+
+
+def monthly_block_rows(blocks):
+    """One BilateralTrades-shaped row per block for a monthly-or-longer
+    trade: MW is fixed for the whole date range, so there's no hourly
+    grid to generate against the WECC calendar or fold back down — each
+    block *is* the row.
+
+    `blocks` is an iterable of (start_date, end_date, shape, mw). Returns
+    (rows, errors) in the same {"start_date", "stop_date", "he", "mw"}
+    shape data.bilateral.compress_schedule produces; rows is only
+    complete when errors is empty.
+    """
+    rows, errors = [], []
+    for start_date, end_date, shape, mw in blocks:
+        if start_date > end_date:
+            errors.append(
+                f"Start Date must be on or before End Date ({start_date} - {end_date})."
+            )
+            continue
+        try:
+            he = shape_to_he(shape)
+        except ValueError as e:
+            errors.append(str(e))
+            continue
+        rows.append(
+            {"start_date": start_date, "stop_date": end_date, "he": he, "mw": float(mw)}
+        )
+    return rows, errors
+
+
 def build_schedule(start_date, end_date, kind, mw, custom_start_he=None, custom_end_he=None):
     """Determine which hours get `mw` for each date in [start_date, end_date],
     using the WECC calendar to decide which hours are on-/off-peak per day.

@@ -155,6 +155,70 @@ class TestPreviewDbInsert:
             assert at.session_state["db_preview"] is not None
 
 
+class TestMonthlyTrades:
+    """IsMonthly skips the hourly grid entirely — a fixed MW for the whole
+    period, so each schedule block is written as a single row instead of
+    being generated/edited/compressed hour by hour. See
+    domain.shapes.monthly_block_rows and ui.schedule's is_monthly branch.
+    """
+
+    def _set_monthly(self, at, value=True):
+        [c for c in at.checkbox if c.label == "IsMonthly"][0].set_value(value).run()
+        return at
+
+    def test_checking_is_monthly_hides_the_hourly_grid(self):
+        at = _run()
+        assert at.dataframe  # the ordinary hourly grid is there by default
+        self._set_monthly(at)
+        assert not at.dataframe
+        assert not [b for b in at.button if b.label == "Generate"]
+
+    def test_a_range_over_31_dates_is_not_an_error_when_monthly(self):
+        at = _run()
+        self._set_monthly(at)
+        d = {x.label: x for x in at.date_input}
+        start = d["Start Date"].value
+        d["End Date"].set_value(start + timedelta(days=90)).run()
+        assert not any("Split it into smaller" in e.value for e in at.error)
+
+    def test_monthly_trade_writes_one_row_per_block_no_schedule(self):
+        at = _run()
+        _fill_minimal_trade(at)
+        self._set_monthly(at)
+        d = {x.label: x for x in at.date_input}
+        start = d["Start Date"].value
+        d["End Date"].set_value(start + timedelta(days=90)).run()
+        [b for b in at.button if b.label == "Add Trade"][0].click().run()
+
+        assert not at.exception, [e.value for e in at.exception]
+        assert not at.error, [e.value for e in at.error]
+        assert len(at.session_state["trades"]) == 1
+        trade = at.session_state["trades"][0]
+        assert trade["schedule"] == []
+        assert len(trade["monthly_blocks"]) == 1
+        row = trade["monthly_blocks"][0]
+        assert row["start_date"] == start
+        assert row["stop_date"] == start + timedelta(days=90)
+        assert row["he"] == "HL"
+
+    def test_invalid_shape_blocks_add_trade_when_monthly(self):
+        at = _run()
+        _fill_minimal_trade(at)
+        self._set_monthly(at)
+        at.text_input(key="shape_0").set_value("garbage").run()
+        [b for b in at.button if b.label == "Add Trade"][0].click().run()
+        assert any("garbage" in e.value for e in at.error)
+        assert len(at.session_state["trades"]) == 0
+
+    def test_trades_list_shows_monthly_trade_without_an_hourly_grid(self):
+        at = _run()
+        _fill_minimal_trade(at)
+        self._set_monthly(at)
+        [b for b in at.button if b.label == "Add Trade"][0].click().run()
+        assert any("Monthly" in e.label for e in at.expander)
+        assert not at.dataframe
+
+
 class TestRealInsertPathIsMocked:
     """The only place a real submit's insert path is exercised — always
     against a fake insert_trade/create_compliance_folders, never the

@@ -12,8 +12,11 @@ import pytest
 
 from data.trade_string import parse_trade_string
 
-COUNTERPARTIES = ["AZPS", "BPAT", "EPE", "ABEX", "SRP"]
-LOCATIONS = ["PALOVERDE500", "MEAD230", "MIDC", "JohnDay", "SPRINGER345", "GLWND1", "CROSSOVER"]
+COUNTERPARTIES = ["AZPS", "BPAT", "EPE", "ABEX", "SRP", "CONC", "NEVP"]
+LOCATIONS = [
+    "PALOVERDE500", "MEAD230", "MIDC", "JohnDay", "SPRINGER345", "GLWND1",
+    "CROSSOVER", "NAVAJO500",
+]
 INDEXES = ["PALOVERDE", "MONA", "MEAD230", "AESO", "MIDC"]
 SPECIFIED_SOURCES = [
     "Bonneville Power Administration", "Palo Verde Nuclear",
@@ -128,6 +131,54 @@ class TestRealExamples:
         assert r.get("location") == "CROSSOVER"
         assert r.get("index") is None
         assert r.get("price") == 45.0
+
+    def test_example_10_from_counterparty_quarter_and_index_at_location(self):
+        r = parse(
+            "MAG buys from Conoco 75mw of Non-caiso power for Q3 HL 2027 "
+            "at PV index + 9.5"
+        )
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "CONC"
+        assert r.get("direction") == "Buy"
+        assert r.get("mw") == 75.0
+        assert r.get("shape") == "HL"
+        assert r.get("location") == "PALOVERDE500"
+        assert r.get("index") == "PALOVERDE"
+        assert r.get("price") == 9.5
+        assert r.get("is_source_non_caiso") is True
+        assert r.get("start_date") == date(2027, 7, 1)
+        assert r.get("end_date") == date(2027, 9, 30)
+        assert r.get("is_monthly") is True
+        assert not r.warnings
+
+    def test_example_11_month_range_shorthand(self):
+        r = parse("NEVP buys 25mw he17-22 ncs Jul-Aug 28 at Navajo for $216")
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "NEVP"
+        assert r.get("direction") == "Sell"  # NEVP buys -> we sell
+        assert r.get("mw") == 25.0
+        assert r.get("shape") == "17-22"
+        assert r.get("location") == "NAVAJO500"
+        assert r.get("index") is None
+        assert r.get("price") == 216.0
+        assert r.get("is_source_non_caiso") is True
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 8, 31)
+        assert r.get("is_monthly") is True
+
+    def test_example_12_single_month_shorthand(self):
+        r = parse("NEVP buys 25mw he17-22 ncs Jul 28 at Navajo for $230")
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "NEVP"
+        assert r.get("direction") == "Sell"  # NEVP buys -> we sell
+        assert r.get("mw") == 25.0
+        assert r.get("shape") == "17-22"
+        assert r.get("location") == "NAVAJO500"
+        assert r.get("price") == 230.0
+        assert r.get("is_source_non_caiso") is True
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 7, 31)
+        assert r.get("is_monthly") is True
 
 
 # --- Single-hour shapes (no dash) ------------------------------------------
@@ -266,6 +317,139 @@ class TestFlowDateAnchoring:
         r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5")
         assert r.get("start_date") is None
         assert r.get("end_date") is None
+
+
+# --- Quarter shorthand and the is_monthly flag ------------------------------
+
+class TestQuarterShorthand:
+    def test_quarter_with_embedded_shape_sets_range_and_shape(self):
+        r = parse("AZPS sells 10MW PALOVERDE500 FIXED $5 for Q3 HL 2027")
+        assert r.ok, r.errors
+        assert r.get("shape") == "HL"
+        assert r.get("start_date") == date(2027, 7, 1)
+        assert r.get("end_date") == date(2027, 9, 30)
+
+    def test_quarter_without_embedded_shape(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 for Q1 2027")
+        assert r.ok, r.errors
+        assert r.get("start_date") == date(2027, 1, 1)
+        assert r.get("end_date") == date(2027, 3, 31)
+
+    def test_fourth_quarter_ends_on_calendar_year_end(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 for Q4 2027")
+        assert r.get("start_date") == date(2027, 10, 1)
+        assert r.get("end_date") == date(2027, 12, 31)
+
+    def test_quarter_span_sets_is_monthly(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 for Q3 2027")
+        assert r.get("is_monthly") is True
+
+    def test_short_flow_range_does_not_set_is_monthly(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 flow 9/15-9/17")
+        assert "is_monthly" not in r.fields
+
+
+class TestMonthRangeShorthand:
+    def test_two_digit_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul-Aug 28")
+        assert r.ok, r.errors
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 8, 31)
+
+    def test_four_digit_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul-Aug 2028")
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 8, 31)
+
+    def test_full_month_names(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 July-August 28")
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 8, 31)
+
+    def test_single_month_range(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Sep-Sep 28")
+        assert r.get("start_date") == date(2028, 9, 1)
+        assert r.get("end_date") == date(2028, 9, 30)
+
+    def test_range_wrapping_into_next_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Nov-Jan 28")
+        assert r.get("start_date") == date(2028, 11, 1)
+        assert r.get("end_date") == date(2029, 1, 31)
+
+    def test_sets_is_monthly(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul-Aug 28")
+        assert r.get("is_monthly") is True
+
+
+class TestSingleMonthShorthand:
+    def test_two_digit_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul 28")
+        assert r.ok, r.errors
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 7, 31)
+
+    def test_four_digit_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul 2028")
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 7, 31)
+
+    def test_full_month_name(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 July 28")
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 7, 31)
+
+    def test_february_leap_year(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Feb 28", today=date(2027, 1, 1))
+        assert r.get("start_date") == date(2028, 2, 1)
+        assert r.get("end_date") == date(2028, 2, 29)  # 2028 is a leap year
+
+    def test_sets_is_monthly(self):
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul 28")
+        assert r.get("is_monthly") is True
+
+    def test_month_range_still_wins_over_single_month_fallback(self):
+        # "Jul-Aug 28" must not be read as bare "Jul" plus a stray "-Aug 28".
+        r = parse("AZPS sells 10MW HL PALOVERDE500 FIXED $5 Jul-Aug 28")
+        assert r.get("start_date") == date(2028, 7, 1)
+        assert r.get("end_date") == date(2028, 8, 31)
+
+
+# --- "from <counterparty>" phrasing -----------------------------------------
+
+class TestFromCounterparty:
+    def test_mag_buys_from_names_the_counterparty(self):
+        r = parse("MAG buys from Conoco 75mw HL PALOVERDE500 FIXED $5")
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "CONC"
+        assert r.get("direction") == "Buy"
+
+    def test_mag_sells_from_names_the_counterparty(self):
+        r = parse("MAG sells from Conoco 75mw HL PALOVERDE500 FIXED $5")
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "CONC"
+        assert r.get("direction") == "Sell"
+
+    def test_unrecognized_counterparty_after_from_fails_closed(self):
+        r = parse("MAG buys from Zzyzx 75mw HL PALOVERDE500 FIXED $5")
+        assert not r.ok
+        assert "counterparty" not in r.fields
+
+
+# --- "index" without "@", and the non-caiso wording -------------------------
+
+class TestBareIndexAndNonCaiso:
+    def test_bare_index_derives_node_from_location(self):
+        r = parse("AZPS sells 10MW HL at PALOVERDE500 index +9.5")
+        assert r.ok, r.errors
+        assert r.get("location") == "PALOVERDE500"
+        assert r.get("index") == "PALOVERDE"
+        assert r.get("price") == 9.5
+
+    def test_non_caiso_power_wording_sets_the_flag(self):
+        r = parse("AZPS sells 10MW of Non-caiso power HL PALOVERDE500 FIXED $5")
+        assert r.ok, r.errors
+        assert r.get("is_source_non_caiso") is True
+        assert not r.warnings
 
 
 # --- Order independence -----------------------------------------------------

@@ -86,6 +86,16 @@ class TestEconomicsRow:
         labels = _labels(at.selectbox)
         assert labels.index("Specified Source") < labels.index("WSPP Contract Type")
 
+    def test_index_can_be_cleared_back_to_none(self):
+        # Regression: widget_defaults omits index=None once the key exists
+        # in session_state, which silently makes a selectbox non-nullable
+        # — the field could be set, but never cleared back to blank again.
+        at = AppTest.from_file(APP_PATH, default_timeout=90).run()
+        at.selectbox(key="index_name").set_value("PALOVERDE").run()
+        assert at.session_state["index_name"] == "PALOVERDE"
+        at.selectbox(key="index_name").set_value(None).run()
+        assert at.session_state["index_name"] is None
+
     def test_economics_row_comes_after_the_paste_box(self):
         at = AppTest.from_file(APP_PATH, default_timeout=90).run()
         order = []

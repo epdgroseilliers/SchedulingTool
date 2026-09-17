@@ -12,7 +12,7 @@ from domain.grid import (
     dates_in_range,
     make_block_grid,
 )
-from domain.shapes import generate_block_grid
+from domain.shapes import generate_block_grid, shape_to_he
 from domain.trade import default_block_start
 from ui.session import block_grid_key, get_version, version_key, widget_defaults
 
@@ -64,21 +64,30 @@ def sync_block_dates(bid, default_date):
     st.session_state[last_key] = default_date
 
 
-def render_schedule_section(trade_date, is_dam):
+def render_schedule_section(trade_date, is_dam, is_monthly=False):
     """Render every block in st.session_state.block_ids.
 
-    Returns (block_grids, block_ranges, block_shapes):
-    - block_grids: {bid: {date: long HE/MW DataFrame}}
-    - block_ranges: [(start_date, end_date), ...], one per block
+    Returns (block_grids, block_ranges, block_shapes, block_mws):
+    - block_grids: {bid: {date: long HE/MW DataFrame}} — empty for a
+      monthly block, which has no hourly grid.
+    - block_ranges: {bid: (start_date, end_date)}
     - block_shapes: {bid: shape string}
+    - block_mws: {bid: mw}
+
+    `is_monthly` skips generating, editing, and rendering the per-hour
+    grid entirely: a monthly-or-longer trade is a fixed MW for the whole
+    date range (and routinely spans more dates than MAX_BLOCK_DATES), so
+    the block's own Start/End/Shape/MW *is* the row that gets written —
+    see domain.shapes.monthly_block_rows.
     """
     st.subheader("Schedule")
 
     new_block_default_start = default_block_start(trade_date, is_dam)
 
     block_grids = {}
-    block_ranges = []
+    block_ranges = {}
     block_shapes = {}
+    block_mws = {}
     for bid in st.session_state.block_ids:
         with st.container(border=True):
             specs = [1.1, 1.1, 1.5, 0.7, 0.9, 1.1]
@@ -101,7 +110,7 @@ def render_schedule_section(trade_date, is_dam):
             start_date = dcol1.date_input("Start Date", key=start_key, **start_kwargs)
             end_kwargs = {} if end_key in st.session_state else {"value": start_date}
             end_date = dcol2.date_input("End Date", key=end_key, **end_kwargs)
-            block_ranges.append((start_date, end_date))
+            block_ranges[bid] = (start_date, end_date)
             shape = gcol1.text_input(
                 "Shape",
                 key=f"shape_{bid}",
@@ -114,6 +123,33 @@ def render_schedule_section(trade_date, is_dam):
                 "MW", min_value=1, step=1, key=f"mw_{bid}",
                 **widget_defaults(f"mw_{bid}", value=25),
             )
+            block_mws[bid] = mw
+
+            if is_monthly:
+                remove_clicked = (
+                    row[6].button("Remove block", key=f"remove_{bid}", width="stretch")
+                    if show_remove else False
+                )
+                if remove_clicked:
+                    st.session_state.block_ids.remove(bid)
+                    st.session_state.pop(block_grid_key(bid), None)
+                    st.session_state.pop(version_key(bid), None)
+                    st.rerun()
+                block_grids[bid] = {}
+                if start_date > end_date:
+                    st.error("Start Date must be on or before End Date.")
+                    continue
+                try:
+                    he_preview = shape_to_he(shape)
+                except ValueError as e:
+                    st.error(str(e))
+                else:
+                    st.caption(
+                        f"Fixed {mw:g} MW, {he_preview}, for the full period — "
+                        f"no hourly schedule needed."
+                    )
+                continue
+
             generate_clicked = gcol3.button("Generate", key=f"generate_{bid}", width="stretch")
             clear_clicked = gcol4.button(
                 "Clear schedule", key=f"clear_{bid}", type="primary", width="stretch"
@@ -216,4 +252,4 @@ def render_schedule_section(trade_date, is_dam):
             st.session_state[block_grid_key(bid)] = edited
             block_grids[bid] = block_grid_to_date_frames(edited)
 
-    return block_grids, block_ranges, block_shapes
+    return block_grids, block_ranges, block_shapes, block_mws

@@ -5,7 +5,14 @@ from datetime import date
 
 import pytest
 
-from domain.shapes import build_schedule, generate_block_grid, parse_shape, shape_label
+from domain.shapes import (
+    build_schedule,
+    generate_block_grid,
+    monthly_block_rows,
+    parse_shape,
+    shape_label,
+    shape_to_he,
+)
 
 
 class TestParseShape:
@@ -102,6 +109,63 @@ class TestGenerateBlockGridCustom:
         row = grid[grid["Date"] == start].iloc[0]
         assert row["7"] == 25.0 and row["8"] == 25.0 and row["9"] == 25.0
         assert row["10"] == 0.0
+
+
+class TestShapeToHe:
+    """The He text for a monthly-style row that skips the hourly grid —
+    stores the shape as written, no WECC calendar lookup involved."""
+
+    def test_hl_ll_atc_map_to_their_label(self):
+        assert shape_to_he("HL") == "HL"
+        assert shape_to_he("LL") == "LL"
+        assert shape_to_he("atc") == "ATC"
+
+    def test_custom_range_is_written_plainly(self):
+        assert shape_to_he("7-22") == "7-22"
+
+    def test_single_hour_has_no_dash(self):
+        assert shape_to_he("14") == "14"
+
+    def test_invalid_shape_raises(self):
+        with pytest.raises(ValueError):
+            shape_to_he("garbage")
+
+
+class TestMonthlyBlockRows:
+    def test_one_row_per_block_no_hourly_expansion(self):
+        blocks = [
+            (date(2027, 7, 1), date(2027, 9, 30), "HL", 75),
+            (date(2027, 1, 1), date(2027, 3, 31), "7-22", 10),
+        ]
+        rows, errors = monthly_block_rows(blocks)
+        assert errors == []
+        assert rows == [
+            {"start_date": date(2027, 7, 1), "stop_date": date(2027, 9, 30), "he": "HL", "mw": 75.0},
+            {"start_date": date(2027, 1, 1), "stop_date": date(2027, 3, 31), "he": "7-22", "mw": 10.0},
+        ]
+
+    def test_start_after_end_is_an_error_and_skips_the_row(self):
+        blocks = [(date(2027, 9, 30), date(2027, 7, 1), "HL", 75)]
+        rows, errors = monthly_block_rows(blocks)
+        assert rows == []
+        assert len(errors) == 1
+        assert "on or before" in errors[0]
+
+    def test_bad_shape_is_an_error_and_skips_the_row(self):
+        blocks = [(date(2027, 7, 1), date(2027, 9, 30), "garbage", 75)]
+        rows, errors = monthly_block_rows(blocks)
+        assert rows == []
+        assert "garbage" in errors[0]
+
+    def test_one_bad_block_does_not_drop_the_others(self):
+        blocks = [
+            (date(2027, 7, 1), date(2027, 9, 30), "HL", 75),
+            (date(2027, 1, 1), date(2027, 3, 31), "garbage", 10),
+        ]
+        rows, errors = monthly_block_rows(blocks)
+        assert len(rows) == 1
+        assert rows[0]["he"] == "HL"
+        assert len(errors) == 1
 
 
 @pytest.mark.db

@@ -125,6 +125,42 @@ class TestTradeDateAnchoring:
         assert scheduled == [7, 8, 9, 10]
 
 
+class TestNoDateFallsBackToTradeDate:
+    """No flow date in the string clears start_0/end_0, which falls back to
+    domain.trade.default_block_start — the trade date itself when IsDAM is
+    off (vs. the next day when it's on). See ui.paste.apply_parsed_string.
+    """
+
+    def test_isdam_off_before_paste(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        [c for c in at.checkbox if c.label == "IsDAM"][0].set_value(False).run()
+        _paste(at, "BPA sells 100MW LL ACS at JD for midc+3")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        assert ss["start_0"] == ss["trade_date"]
+        assert ss["end_0"] == ss["trade_date"]
+
+    def test_isdam_off_after_paste(self):
+        # Toggling IsDAM after a dateless paste must still resync to the
+        # trade date — the block is still pristine (untouched since the
+        # paste populated it from the same IsDAM-driven default).
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "BPA sells 100MW LL ACS at JD for midc+3")
+        [c for c in at.checkbox if c.label == "IsDAM"][0].set_value(False).run()
+        ss = at.session_state
+        assert ss["start_0"] == ss["trade_date"]
+        assert ss["end_0"] == ss["trade_date"]
+
+    def test_dateless_paste_over_a_previously_dated_one(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        [c for c in at.checkbox if c.label == "IsDAM"][0].set_value(False).run()
+        _paste(at, "APS SELLS/MAG BUYS 100 MWS HE18-HE21 PV FIXED $73 flow 9/15 wspp sched c")
+        _paste(at, "BPA sells 100MW LL ACS at JD for midc+3")
+        ss = at.session_state
+        assert ss["start_0"] == ss["trade_date"]
+        assert ss["end_0"] == ss["trade_date"]
+
+
 class TestWsppFormsThroughTheApp:
     def test_bare_sched_form_sets_wspp_contract_type(self):
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()
@@ -133,6 +169,42 @@ class TestWsppFormsThroughTheApp:
         assert at.session_state["counterparty"] == "ABEX"
         assert at.session_state["location"] == "GLWND1"
         assert at.session_state["wspp_contract"] == "B"
+
+
+class TestFromCounterpartyAndMonthlyFlagThroughTheApp:
+    def test_from_counterparty_bare_index_and_monthly_flag(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(
+            at,
+            "MAG buys from Conoco 75mw HL of Non-caiso power at PV index + 9.5 "
+            "flow 9/1-9/28",
+        )
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        assert ss["counterparty"] == "CONC"
+        assert ss["is_sell"] is False
+        assert ss["location"] == "PALOVERDE500"
+        assert ss["index_name"] == "PALOVERDE"
+        assert ss["price"] == 9.5
+        assert ss["is_source_non_caiso"] is True
+        assert ss["rare_fields"]["is_monthly"] is True
+
+    def test_full_quarter_parses_and_skips_the_block_size_cap(self):
+        # Q3 spans 92 days, well past the ordinary 31-date block cap (see
+        # domain/grid.py MAX_BLOCK_DATES) — but IsMonthly skips the hourly
+        # grid entirely, so that cap never applies here.
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(
+            at,
+            "MAG buys from Conoco 75mw of Non-caiso power for Q3 HL 2027 "
+            "at PV index + 9.5",
+        )
+        ss = at.session_state
+        assert not at.error, [e.value for e in at.error]
+        assert ss["counterparty"] == "CONC"
+        assert ss["start_0"] == date(2027, 7, 1)
+        assert ss["end_0"] == date(2027, 9, 30)
+        assert ss["rare_fields"]["is_monthly"] is True
 
 
 class TestPasteThenAddTrade:

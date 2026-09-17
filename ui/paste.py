@@ -63,6 +63,8 @@ def apply_parsed_string(text):
     )
     st.session_state.is_nws = bool(parsed.get("is_nws", False))
     st.session_state.is_source_non_caiso = bool(parsed.get("is_source_non_caiso", False))
+    # A flow range spanning a month or more (e.g. a quarter) implies IsMonthly.
+    st.session_state.rare_fields["is_monthly"] = bool(parsed.get("is_monthly", False))
 
     # A pasted string describes exactly one leg, so collapse back to one
     # block and drop every existing grid — otherwise leftover blocks from a
@@ -108,6 +110,8 @@ def apply_parsed_string(text):
         summary["lines"].append("IsNWS")
     if st.session_state.is_source_non_caiso:
         summary["lines"].append("IsSourceNonCaiso")
+    if st.session_state.rare_fields["is_monthly"]:
+        summary["lines"].append("IsMonthly")
     st.session_state.parse_summary = summary
 
 

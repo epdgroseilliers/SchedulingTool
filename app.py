@@ -37,7 +37,9 @@ st.divider()
 economics = render_economics_row()
 rare = render_other_attributes()
 
-block_grids, block_ranges, block_shapes = render_schedule_section(trade_date, is_dam)
+block_grids, block_ranges, block_shapes, block_mws = render_schedule_section(
+    trade_date, is_dam, is_monthly=rare["is_monthly"]
+)
 
 add_block_clicked, add_trade_clicked, preview_clicked, input_in_db = render_action_row()
 past_dated, past_confirmed = render_past_date_gate(trade_date, block_ranges, input_in_db)
@@ -62,6 +64,8 @@ handle_submit(
     trade_fields,
     block_grids,
     block_shapes,
+    block_ranges,
+    block_mws,
     add_trade_clicked,
     preview_clicked,
     input_in_db,

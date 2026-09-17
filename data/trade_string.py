@@ -16,6 +16,9 @@ Written against these real strings:
     APS sells 50MW ncs he17-22 Mon only at PV for $65
     ABEX sells 2mw atc at Glacier for $28 sched B
     NWMT sells 50mw HE18 at crossover for $45
+    MAG buys from Conoco 75mw of Non-caiso power for Q3 HL 2027 at PV index + 9.5
+    NEVP buys 25mw he17-22 ncs Jul-Aug 28 at Navajo for $216
+    NEVP buys 25mw he17-22 ncs Jul 28 at Navajo for $230
 
 Each extractor scans the whole string and blanks out the span it claims, so
 field order never matters — only a few extractors run in a fixed order to
@@ -38,7 +41,8 @@ COUNTERPARTY_ALIASES = {
     "BPA": "BPAT",
     "PGE": "PGEM",
     "SCE": "SCET",
-    "NWMT": "NWDS"
+    "NWMT": "NWDS",
+    "CONOCO": "CONC",
 }
 
 LOCATION_ALIASES = {
@@ -108,6 +112,33 @@ _WEEKDAY_PATTERN = (
     r"\b(" + "|".join(sorted(WEEKDAY_NAMES, key=len, reverse=True)) + r")\b"
     r"(?:\s+only\b)?"
 )
+
+# A "Jul-Aug 28" month range names a flow-date range directly: the first day
+# of the first month through the last day of the second, both in the given
+# (two- or four-digit) year. Sorted longest-first so "jul" isn't cut short by
+# a shorter alternative winning the match first.
+MONTH_NAMES = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+_MONTH_PATTERN = "(" + "|".join(sorted(MONTH_NAMES, key=len, reverse=True)) + ")"
+_MONTH_RANGE_PATTERN = (
+    r"\b(?:for\s+)?" + _MONTH_PATTERN + r"\s*-\s*" + _MONTH_PATTERN + r"\s+(\d{2,4})\b"
+)
+# A single month ("Jul 28") names that whole month as the flow-date range —
+# tried only when the range form above doesn't match, so "Jul-Aug 28" is
+# never read as bare "Jul" plus a stray "-Aug 28".
+_SINGLE_MONTH_PATTERN = r"\b(?:for\s+)?" + _MONTH_PATTERN + r"\s+(\d{2,4})\b"
 
 FUZZY_CUTOFF = 0.8
 
@@ -228,6 +259,39 @@ def _premium(raw):
     return float(re.sub(r"\s+", "", raw))
 
 
+def _last_day_of_month(year, month):
+    if month == 12:
+        return date(year, 12, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _quarter_bounds(quarter, year):
+    """First and last calendar day of a quarter, e.g. (3, 2027) -> Jul 1 ..
+    Sep 30, 2027."""
+    start_month = 3 * (quarter - 1) + 1
+    start = date(year, start_month, 1)
+    end = _last_day_of_month(year, start_month + 2)
+    return start, end
+
+
+def _full_year(year_str):
+    """'28' -> 2028, '2028' -> 2028. Desk shorthand only ever means the
+    2000s, so a two-digit year doesn't need today-relative inference the
+    way an MM/DD flow date does."""
+    year_str = year_str.strip()
+    return int(year_str) if len(year_str) > 2 else 2000 + int(year_str)
+
+
+def _month_range_bounds(month1, month2, year):
+    """First day of `month1` through the last day of `month2`, e.g.
+    (7, 8, 2028) -> Jul 1 .. Aug 31, 2028. `month2` rolling before `month1`
+    (e.g. Nov-Jan) rolls the end into the following year."""
+    start = date(year, month1, 1)
+    end_year = year if month2 >= month1 else year + 1
+    end = _last_day_of_month(end_year, month2)
+    return start, end
+
+
 def _next_weekday_on_or_after(start, weekday_num):
     """The nearest date >= `start` that falls on `weekday_num` (Monday=0).
     Returns `start` itself when it already matches."""
@@ -255,6 +319,20 @@ def _party_candidates(text, seg_start, verb_start):
     for size in range(min(_MAX_PARTY_WORDS, len(words)), 0, -1):
         chosen = words[-size:]
         yield " ".join(w for w, _ in chosen), chosen[0][1]
+
+
+def _party_words_after(text, start):
+    """Mirror of `_party_candidates`, but scanning forward from `start` —
+    for 'MAG buys from Conoco 75mw...', where the counterparty follows
+    'from' rather than having its own verb. Longest first, each with the
+    absolute (start, end) span it occupies."""
+    words = [
+        (m.group(), start + m.start(), start + m.end())
+        for m in re.finditer(r"\S+", text[start:])
+    ]
+    for size in range(min(_MAX_PARTY_WORDS, len(words)), 0, -1):
+        chosen = words[:size]
+        yield " ".join(w for w, _, _ in chosen), chosen[0][1], chosen[-1][2]
 
 
 def _extract_parties(scanner, counterparties, full_names, result):
@@ -322,15 +400,35 @@ def _extract_parties(scanner, counterparties, full_names, result):
 
     result.fields["direction"] = ParsedField(direction, source, "derived")
 
-    if not them:
-        result.errors.append("No counterparty found in the string.")
-        return
-
-    name, value, confidence, _, _, _ = them[0]
-    if value is None:
-        result.errors.append(f"Counterparty {name!r} not recognized.")
+    if them:
+        name, value, confidence, _, _, _ = them[0]
+        if value is None:
+            result.errors.append(f"Counterparty {name!r} not recognized.")
+        else:
+            result.fields["counterparty"] = ParsedField(value, name, confidence)
     else:
-        result.fields["counterparty"] = ParsedField(value, name, confidence)
+        # Only MAG's own verb was found ("MAG buys from Conoco ..."), so the
+        # counterparty follows "from" instead of having its own verb.
+        verb_end = us[0][5]
+        fm = re.search(r"\bfrom\s+", text[verb_end:], re.I)
+        found = None
+        if fm:
+            after = verb_end + fm.end()
+            for name, start, end in _party_words_after(text, after):
+                if _norm(name) == SELF_NAME:
+                    continue
+                value, confidence = resolve_token(
+                    name, counterparties, COUNTERPARTY_ALIASES, full_names
+                )
+                if value is not None:
+                    found = (name, value, confidence, start, end)
+                    break
+        if found:
+            name, value, confidence, start, end = found
+            result.fields["counterparty"] = ParsedField(value, name, confidence)
+            scanner._consume(verb_end + fm.start(), end)
+        else:
+            result.errors.append("No counterparty found in the string.")
 
     # Blank each party name together with its verb, so neither can later be
     # mistaken for a location or a specified source.
@@ -363,6 +461,16 @@ def _extract_price_and_index(scanner, indexes, result):
         )
         return
 
+    # Same "index at this location" meaning as '@ index', just without the
+    # '@' — e.g. 'at PV index + 9.5'.
+    m = scanner.take(r"\bindex\s*([+-]?\s*\d*\.?\d+)?")
+    if m:
+        result.fields["index"] = ParsedField(None, "index", "derived")
+        result.fields["price"] = ParsedField(
+            _premium(m.group(1)) if m.group(1) else 0.0, m.group(0).strip(), "exact"
+        )
+        return
+
     m = scanner.take(r"\bfixed\b\s*\$?\s*(-?\d+(?:\.\d+)?)")
     if m:
         result.fields["index"] = ParsedField(None, "fixed", "exact")
@@ -380,7 +488,7 @@ def _derive_index_from_location(result):
     index_field = result.fields.get("index")
     if not index_field or index_field.value is not None:
         return
-    if index_field.source_text != "@ index":
+    if index_field.source_text not in ("@ index", "index"):
         return
     location = result.get("location")
     if location is None:
@@ -424,6 +532,48 @@ def parse_trade_string(
     scanner = _Scanner(text)
 
     _extract_parties(scanner, counterparties, full_names, result)
+
+    # Quarter shorthand ("Q3 2027", or with the shape sitting in between,
+    # "Q3 HL 2027") sets the flow-date range to that quarter's first and
+    # last day. Run before price/index extraction so a bare 'for Q3 2027'
+    # isn't mistaken for a pricing index, and consume around any embedded
+    # shape token rather than swallowing it, so it's still there for the
+    # shape extractor below.
+    m = re.search(
+        r"\b(?:for\s+)?q([1-4])\s*(hl|ll|atc)?\s*(\d{4})\b", scanner.remaining, re.I
+    )
+    if m:
+        start, end = _quarter_bounds(int(m.group(1)), int(m.group(3)))
+        result.fields["start_date"] = ParsedField(start, m.group(0).strip(), "derived")
+        result.fields["end_date"] = ParsedField(end, m.group(0).strip(), "derived")
+        if m.group(2):
+            scanner._consume(m.start(), m.start(2))
+            scanner._consume(m.end(2), m.end())
+        else:
+            scanner._consume(m.start(), m.end())
+
+    # Month-range shorthand ("Jul-Aug 28") sets the flow-date range to the
+    # first day of the first month through the last day of the second, in
+    # the given year. A single month ("Jul 28") is the same idea over one
+    # month instead of two.
+    m = scanner.take(_MONTH_RANGE_PATTERN)
+    if m:
+        month1 = MONTH_NAMES[m.group(1).lower()]
+        month2 = MONTH_NAMES[m.group(2).lower()]
+        year = _full_year(m.group(3))
+        start, end = _month_range_bounds(month1, month2, year)
+        result.fields["start_date"] = ParsedField(start, m.group(0).strip(), "derived")
+        result.fields["end_date"] = ParsedField(end, m.group(0).strip(), "derived")
+    else:
+        m = scanner.take(_SINGLE_MONTH_PATTERN)
+        if m:
+            month = MONTH_NAMES[m.group(1).lower()]
+            year = _full_year(m.group(2))
+            start = date(year, month, 1)
+            end = _last_day_of_month(year, month)
+            result.fields["start_date"] = ParsedField(start, m.group(0).strip(), "derived")
+            result.fields["end_date"] = ParsedField(end, m.group(0).strip(), "derived")
+
     _extract_price_and_index(scanner, indexes, result)
 
     m = scanner.take(
@@ -448,6 +598,14 @@ def parse_trade_string(
             resolved = _next_weekday_on_or_after(today, WEEKDAY_NAMES[wd.group(1).lower()])
             result.fields["start_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
             result.fields["end_date"] = ParsedField(resolved, wd.group(0).strip(), "derived")
+
+    # A flow range spanning a full month or more (e.g. a whole quarter) is a
+    # monthly trade, regardless of how the dates were derived.
+    start_date, end_date = result.get("start_date"), result.get("end_date")
+    if start_date and end_date and (end_date - start_date).days + 1 >= 28:
+        result.fields["is_monthly"] = ParsedField(
+            True, "start_date/end_date span >= a month", "derived"
+        )
 
     # "wspp sched c", but also either word alone ("sched B", "wspp B").
     m = scanner.take(r"\b(?:wspp\s*sched(?:ule)?|sched(?:ule)?|wspp)\s*([bc])\b")
@@ -482,8 +640,9 @@ def parse_trade_string(
 
     if scanner.take(r"\bnws\b"):
         result.fields["is_nws"] = ParsedField(True, "nws")
-    if scanner.take(r"\bncs\b"):
-        result.fields["is_source_non_caiso"] = ParsedField(True, "ncs")
+    m = scanner.take(r"\b(?:of\s+)?(?:ncs|non[-\s]?caiso)\b(?:\s+power\b)?")
+    if m:
+        result.fields["is_source_non_caiso"] = ParsedField(True, m.group(0).strip())
 
     acs = scanner.take(r"\bacs\b")
 

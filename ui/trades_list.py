@@ -15,27 +15,45 @@ def render_trades_list():
         return
 
     for i, t in enumerate(st.session_state.trades):
-        total_mwh = sum(mw for _, _, mw in t["schedule"])
-        dates = sorted({d for d, _, _ in t["schedule"]})
-        with st.expander(
-            f"{t['direction']} — {t['counterparty']} @ {t['location']} — "
-            f"{total_mwh:,.0f} MWh across {len(dates)} date(s)"
-        ):
+        is_monthly = bool(t.get("is_monthly"))
+        if is_monthly:
+            blocks = t.get("monthly_blocks", [])
+            header = (
+                f"{t['direction']} — {t['counterparty']} @ {t['location']} — "
+                f"Monthly, {len(blocks)} block(s)"
+            )
+        else:
+            total_mwh = sum(mw for _, _, mw in t["schedule"])
+            dates = sorted({d for d, _, _ in t["schedule"]})
+            header = (
+                f"{t['direction']} — {t['counterparty']} @ {t['location']} — "
+                f"{total_mwh:,.0f} MWh across {len(dates)} date(s)"
+            )
+        with st.expander(header):
             c1, c2 = st.columns([4, 1])
             with c1:
-                wide_df = schedule_to_wide(t["schedule"])
-                st.dataframe(
-                    wide_df,
-                    hide_index=True,
-                    width="stretch",
-                    column_config={
-                        "Date": st.column_config.DateColumn("Date", width=100),
-                        **{
-                            str(h): st.column_config.NumberColumn(str(h), width=45)
-                            for h in HOURS
+                if is_monthly:
+                    # A fixed MW for the whole period has no hourly grid to
+                    # show — each block is already the row that was written.
+                    for r in blocks:
+                        st.write(
+                            f"{r['start_date']} – {r['stop_date']}: "
+                            f"{r['he']} @ {r['mw']:g} MW"
+                        )
+                else:
+                    wide_df = schedule_to_wide(t["schedule"])
+                    st.dataframe(
+                        wide_df,
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "Date": st.column_config.DateColumn("Date", width=100),
+                            **{
+                                str(h): st.column_config.NumberColumn(str(h), width=45)
+                                for h in HOURS
+                            },
                         },
-                    },
-                )
+                    )
                 st.caption(
                     f"Trade date: {t.get('trade_date', '—')} | "
                     f"Price: {format_price(t.get('index'), t['price'])}"
