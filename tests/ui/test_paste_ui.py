@@ -162,6 +162,58 @@ class TestNoDateFallsBackToTradeDate:
         assert ss["end_0"] == ss["trade_date"]
 
 
+class TestNoDateWithIsDamFollowsCalendar:
+    """The exact reported bug: pasting a string with no flow date, IsDAM
+    checked, only ever produced a single-day block — even when the WECC
+    calendar's next two days were both on-peak. Now the default End Date
+    follows domain.shapes.dam_default_end_date instead of always matching
+    Start Date. See tests/ui/test_schedule_ui.py for the domain-level and
+    non-paste UI coverage of dam_default_end_date itself.
+    """
+
+    def test_hl_default_end_date_follows_the_calendar(self):
+        from domain.shapes import dam_default_end_date
+
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        trade_date = at.session_state["trade_date"]
+        _paste(at, "APS sells 25mw hl at pv for pv+0.5")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        expected_start = trade_date + timedelta(days=1)  # IsDAM defaults to True
+        assert ss["start_0"] == expected_start
+        assert ss["end_0"] == dam_default_end_date(expected_start, "HL")
+
+    def test_custom_shape_default_also_follows_the_calendar(self):
+        from domain.shapes import dam_default_end_date
+
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        trade_date = at.session_state["trade_date"]
+        _paste(at, "APS sells 25mw he7-22 at pv for pv+0.5")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        expected_start = trade_date + timedelta(days=1)
+        assert ss["start_0"] == expected_start
+        assert ss["end_0"] == dam_default_end_date(expected_start, "7-22")
+
+    def test_explicit_weekday_in_the_string_overrides_the_calendar_default(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "APS sells 25mw he7-22 at pv for pv+0.5 Sun only")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        # An explicit date always wins, even where it lands mid-run of a
+        # calendar-driven default — never extended or overwritten.
+        assert ss["start_0"] == ss["end_0"]
+
+    def test_explicit_mmdd_in_the_string_overrides_the_calendar_default(self):
+        friday = date(2026, 9, 11)
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        at.date_input(key="trade_date").set_value(friday).run()
+        _paste(at, "APS sells 25mw he7-22 at pv for pv+0.5 flow 9/18")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        assert ss["start_0"] == ss["end_0"] == date(2026, 9, 18)
+
+
 class TestWsppFormsThroughTheApp:
     def test_bare_sched_form_sets_wspp_contract_type(self):
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()

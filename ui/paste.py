@@ -18,6 +18,7 @@ from domain.options import (
     SPECIFIED_SOURCES,
 )
 from domain.trade import format_price
+from ui.schedule import dates_last_default_keys
 
 
 def apply_parsed_string(text):
@@ -91,7 +92,10 @@ def apply_parsed_string(text):
     else:
         # No flow date in the string: clear the dates so they fall back to
         # the IsDAM-driven WECC default for a fresh block.
-        for key in ("start_0", "end_0", "dates_last_default_0"):
+        for key in (
+            "start_0", "end_0",
+            *dates_last_default_keys(0),
+        ):
             st.session_state.pop(key, None)
 
     price_text = format_price(parsed.get("index"), float(parsed.get("price")))

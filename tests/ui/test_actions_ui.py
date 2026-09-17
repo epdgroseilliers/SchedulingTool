@@ -101,15 +101,18 @@ class TestPastDateGate:
     def test_past_dated_real_submit_blocked_without_confirmation(self):
         at = _run()
         _fill_minimal_trade(at)
+        # ATC (flat 24H) rather than the default HL: HL correctly zeroes
+        # out an off-peak day, and today - 5 days lands on a weekend often
+        # enough to make the test flaky otherwise — ATC has no such
+        # calendar dependency.
+        at.text_input(key="shape_0").set_value("ATC").run()
         at.date_input(key="trade_date").set_value(
             date.today() - timedelta(days=5)
         ).run()
         # Changing Trade Date shifts the still-pristine block's dates too
-        # (sync_block_dates), which reconciles the grid to all-zero for the
-        # newly-in-range date — so it must be regenerated before Add Trade,
-        # or "Schedule needs at least one hour" fires first and the
-        # past-date branch (further down handle_submit) is never reached.
-        [b for b in at.button if b.label == "Generate"][0].click().run()
+        # (sync_block_dates); get_block_grid auto-fills the newly-in-range
+        # date via Shape/MW against the WECC calendar on its own, so no
+        # explicit Generate click is needed before Add Trade.
         [c for c in at.checkbox if c.label == "Input in DB"][0].set_value(True).run()
         [b for b in at.button if b.label == "Add Trade"][0].click().run()
         assert any("past" in e.value.lower() for e in at.error)

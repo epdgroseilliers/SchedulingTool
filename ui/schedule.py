@@ -12,34 +12,59 @@ from domain.grid import (
     dates_in_range,
     make_block_grid,
 )
-from domain.shapes import generate_block_grid, shape_to_he
+from domain.shapes import dam_default_end_date, generate_block_grid, shape_to_he
 from domain.trade import default_block_start
 from ui.session import block_grid_key, get_version, version_key, widget_defaults
 
 DATE_EDITOR_ROW_HEIGHT = 20
 
 
-def get_block_grid(bid, dates):
+def get_block_grid(bid, dates, shape, mw):
     """Session-state grid for a block, reconciled to `dates`: rows for dates
-    still in range keep their values, new dates start all-zero, and rows for
-    dates no longer in range are dropped."""
+    this block has already held keep their values (hand edits included);
+    rows for dates no longer in range are dropped; genuinely new dates —
+    never held by this block before, whether this is its very first render
+    or its range was just widened — are seeded via Shape/MW against the
+    WECC calendar, the same as clicking Generate would give for just that
+    date, rather than left at zero MW.
+
+    Silent on a calendar failure for those new dates (falls back to
+    all-zero): this runs on every render, and a WECC calendar hiccup here
+    shouldn't block the page — clicking Generate explicitly still surfaces
+    the error.
+    """
     existing = st.session_state.get(block_grid_key(bid))
     mw_by_date = {}
     if existing is not None:
         for _, row in existing.iterrows():
             mw_by_date[as_date(row["Date"])] = {h: row[str(h)] for h in HOURS}
+
+    new_dates = [d for d in dates if d not in mw_by_date]
+    if new_dates:
+        gen_grid, _, _, error = generate_block_grid(
+            min(new_dates), max(new_dates), new_dates, shape, mw
+        )
+        if not error:
+            for _, row in gen_grid.iterrows():
+                mw_by_date[as_date(row["Date"])] = {h: row[str(h)] for h in HOURS}
+
     grid = make_block_grid(dates, mw_by_date)
     st.session_state[block_grid_key(bid)] = grid
     return grid
 
 
-def sync_block_dates(bid, default_date):
-    """Keep a pristine block's Start/End Date following `default_date`
-    (which tracks IsDAM) until the trader diverges from it — by editing
-    either date directly, or by using Generate/Clear, at which point the
-    block has real content and silently moving its date range could drop
-    entered MW values (get_block_grid reconciles to whatever dates it's
-    given, dropping ones no longer in range).
+def dates_last_default_keys(bid):
+    return f"dates_last_default_start_{bid}", f"dates_last_default_end_{bid}"
+
+
+def sync_block_dates(bid, default_start, default_end):
+    """Keep a pristine block's Start/End Date following `default_start`/
+    `default_end` (which track IsDAM and, for HL/LL, the WECC calendar —
+    see dam_default_end_date) until the trader diverges from it — by
+    editing either date directly, or by using Generate/Clear, at which
+    point the block has real content and silently moving its date range
+    could drop entered MW values (get_block_grid reconciles to whatever
+    dates it's given, dropping ones no longer in range).
 
     Needed because date_input's `value=` argument is only honored the
     first time a widget with a given key is created — flipping IsDAM on
@@ -47,21 +72,23 @@ def sync_block_dates(bid, default_date):
     would otherwise never visibly change anything.
     """
     start_key, end_key = f"start_{bid}", f"end_{bid}"
-    last_key = f"dates_last_default_{bid}"
-    last_default = st.session_state.get(last_key)
+    last_start_key, last_end_key = dates_last_default_keys(bid)
+    last_default_start = st.session_state.get(last_start_key)
+    last_default_end = st.session_state.get(last_end_key)
 
     if start_key in st.session_state:
         pristine = (
             get_version(bid) == 0
-            and last_default is not None
-            and st.session_state[start_key] == last_default
-            and st.session_state[end_key] == last_default
+            and last_default_start is not None
+            and st.session_state[start_key] == last_default_start
+            and st.session_state[end_key] == last_default_end
         )
         if pristine:
-            st.session_state[start_key] = default_date
-            st.session_state[end_key] = default_date
+            st.session_state[start_key] = default_start
+            st.session_state[end_key] = default_end
 
-    st.session_state[last_key] = default_date
+    st.session_state[last_start_key] = default_start
+    st.session_state[last_end_key] = default_end
 
 
 def render_schedule_section(trade_date, is_dam, is_monthly=False):
@@ -97,18 +124,30 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
             row = st.columns(specs, vertical_alignment="bottom")
             dcol1, dcol2, gcol1, gcol2, gcol3, gcol4 = row[:6]
 
+            # Peeked from session_state rather than the widget below (which
+            # hasn't been created yet this run) — falls back to the same
+            # "HL" the Shape widget itself defaults to for a brand-new block.
+            current_shape = st.session_state.get(f"shape_{bid}", "HL")
+            new_block_default_end = (
+                dam_default_end_date(new_block_default_start, current_shape)
+                if is_dam else new_block_default_start
+            )
+
             # sync_block_dates may just have written today's default straight
             # into session_state; passing `value=` as well on that same call
             # logs a Streamlit policy warning, so it's only passed for a
             # widget key that doesn't exist yet (a genuinely new block).
-            sync_block_dates(bid, new_block_default_start)
+            sync_block_dates(bid, new_block_default_start, new_block_default_end)
             start_key, end_key = f"start_{bid}", f"end_{bid}"
             start_kwargs = (
                 {} if start_key in st.session_state
                 else {"value": new_block_default_start}
             )
             start_date = dcol1.date_input("Start Date", key=start_key, **start_kwargs)
-            end_kwargs = {} if end_key in st.session_state else {"value": start_date}
+            end_kwargs = (
+                {} if end_key in st.session_state
+                else {"value": new_block_default_end}
+            )
             end_date = dcol2.date_input("End Date", key=end_key, **end_kwargs)
             block_ranges[bid] = (start_date, end_date)
             shape = gcol1.text_input(
@@ -207,26 +246,7 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                 st.session_state[version_key(bid)] = ver + 1
                 st.rerun()
 
-            if block_grid_key(bid) not in st.session_state:
-                # A block this app has never shown before: populate it
-                # immediately with the same result Generate would give, so
-                # the common single-block default-shape trade never needs
-                # that click. Runs exactly once per block id — Generate/
-                # Clear/a direct edit all leave the grid present in
-                # session_state, so this never re-fires and so never
-                # overwrites anything the trader has touched. Silent on
-                # failure (falls back to an all-zero grid): this fires on
-                # every page load, and a WECC calendar hiccup here
-                # shouldn't block the page from rendering — clicking
-                # Generate explicitly still surfaces the error.
-                grid, _, _, error = generate_block_grid(
-                    start_date, end_date, block_dates, shape, mw
-                )
-                st.session_state[block_grid_key(bid)] = (
-                    grid if not error else make_block_grid(block_dates)
-                )
-
-            grid_seed = get_block_grid(bid, block_dates)
+            grid_seed = get_block_grid(bid, block_dates, shape, mw)
             edited = st.data_editor(
                 grid_seed,
                 # The date range is part of the key: when it changes, this
