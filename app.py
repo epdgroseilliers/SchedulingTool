@@ -13,6 +13,7 @@ from ui.actions import (
     render_action_row,
     render_past_date_gate,
 )
+from ui.nav import render_nav
 from ui.paste import render_paste_summary
 from ui.preview import render_preview_panel
 from ui.schedule import render_schedule_section
@@ -24,11 +25,16 @@ from ui.trade_fields import (
 )
 from ui.trades_list import render_trades_list
 
-st.set_page_config(page_title="Trade Scheduler", page_icon="⚡", layout="wide")
+st.set_page_config(
+    page_title="Trade Scheduler",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 init_session_state()
 apply_pending_form_reset()
 
-st.title("⚡ Add Trade")
+render_nav("add_trade")
 flush_flash()
 
 trade_date, is_dam = render_entry_row()

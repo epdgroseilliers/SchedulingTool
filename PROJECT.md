@@ -100,7 +100,16 @@ hand-edit that breaks the pattern falls back to an explicit range.
   one holding `PhysiqueBilateral`. Don't collapse these — they're genuinely
   different boxes.
 
-## Phase 2 — the Scheduling View (next, not yet started)
+## Phase 2 — the Scheduling View (first version built)
+
+Built, at `pages/1_Scheduling_View.py` plus the `components/trade_board/`
+custom component. **The canvas question is settled: the custom component
+won.** A native-Streamlit version was built first and rejected on use — it
+was too tall to fit a screen, its squares were too big, and select-two-
+squares-and-press-a-button was too much friction for a tool whose whole
+value is being faster than the alternative. Those aren't things a native
+version could have been tuned out of; they're what it *is*. See *How it
+works now*, below, after the design it was built from.
 
 ### The idea
 
@@ -169,6 +178,227 @@ by any pre-existing trade.
 **The exact market list** As given: CAISO, SWPW,
 SWPP, AESO, CEN. 
 
+### How it works now
+
+**Where the code sits.** `domain/matching.py` (pure: re-expansion, links,
+open-position arithmetic), `data/matching.py` (the flow date's book),
+`components/trade_board/` (the canvas), `ui/scheduling/` (the adapters
+between them), and `pages/1_Scheduling_View.py` wiring it together. Adding
+`pages/` makes this a Streamlit multipage app; `app.py` stays the entry
+script and the Add Trade page.
+
+**The canvas is a custom component**, `components/trade_board/` — one static
+`index.html` speaking Streamlit's component postMessage protocol directly.
+**No npm build step and no React**, deliberately: the whole thing stays in
+this repo, editable in a text editor, and installable with nothing but
+`pip install -r requirements.txt`. A build toolchain would have bought
+ergonomics this doesn't need and cost a second engineering track, which was
+the main argument *against* going this way in the first place.
+
+The component owns the DOM and nothing else — it's handed squares, links and
+markets as plain JSON and has no idea what a leg or a WECC calendar is.
+Everything it could decide but shouldn't (what a square says, which are
+dimmed, when the board may rebuild) is computed in `ui/scheduling/board.py`,
+so it stays testable.
+
+**Interaction.** Squares are **draggable** anywhere on the canvas and stay
+where they're put. Hovering one shows a **`+`**; dragging that onto a square
+on the other side — or onto a **market chip** on the bottom rail — opens the
+schedule popup. A link can equally be **started from a market chip** and
+dragged onto a square, since a market is as good a place to begin from as a
+trade. **Clicking a link line** reopens the same popup to edit or delete it.
+Clicking a square focuses it and dims everything not linked to it; clicking
+it again undims. **`×` on a square clears it off the board** — see
+*Hiding, not deleting*, below.
+
+**Screen budget.** The whole page above the board is one row: flow date,
+source/PSE/POR-POD filters, a refresh button, and the three numbers the desk
+actually reads — **open buys, open sells, net**. The bought/sold totals were
+removed as noise. An earlier version put the filters in a popover to save a
+few more pixels and they were simply never found; a filter you have to go
+looking for isn't a filter, so they're back on the surface with collapsed
+labels. Squares are 150×46 px and the board **measures the viewport and
+fills what's left of the window** rather than taking a fixed height.
+
+**Navigation** is a single button in a shared header (`ui/nav.py`), on both
+pages, pointing at the other one. Streamlit's own page list lives in the
+sidebar, which made every switch cost a drawer-open first — so the sidebar,
+its page list, *and* Streamlit's top bar are all hidden, and this header
+becomes the actual top of the page. Hiding the top bar isn't cosmetic: it's
+fixed-position and floats over the content, so trimming the container's top
+padding alone slid the header underneath it.
+
+**Filtering shows more, not less — a link is never split in two.** The PSE
+and POR/POD filters narrow the board, but a leg that fails one is kept
+anyway when it's directly linked to a leg that passes: filtering down to one
+PSE must not hide the very counterparty a trader is actively tracking a link
+against (filtering to AZPS alone still shows a CONC sale it's linked to).
+Rescue is **one hop** — a leg kept only because of a link doesn't, in turn,
+drag in its own other partners, or a filter in a well-connected book could
+end up reconstructing the whole thing it was meant to narrow. Market chips
+are never filtered out on their own account, rescued or not: they're the
+rail, not squares, and a PSE filter naming a counterparty would otherwise
+take away everywhere to park a position — but they're also not a hub to
+*rescue through*: a real leg linked only to an always-visible market chip
+isn't, on that account alone, pulled back in by some other filter.
+
+**Clearing a square off the board (`×`) is not the same as filtering it
+out**, and does *not* get rescued: it's a deliberate "get this off my view"
+action (see *Hiding, not deleting*, below), so a link with a hidden end
+simply isn't drawn until the square is restored. Only the PSE/POR-POD
+filters get the "show more" treatment.
+
+**The source filter (Database / This session) is not part of this.** It
+decides which legs get *loaded* in the first place, before any link
+bookkeeping happens, so a link spanning a DB trade and a still-unsaved
+session trade could in principle be broken by unchecking one source.
+Extending rescue there would mean always loading both sources regardless of
+the checkboxes — a real question, not implemented, since nobody has hit it
+yet and it costs an always-on DB round trip to fix speculatively.
+
+**Hiding, not deleting.** `×` on a square (or *✕ Clear* on the focused
+square's detail line — two routes, one findable and one fast) clears it off
+the board for the session, and a *Restore N hidden* button brings them all
+back. It deliberately does
+**not** delete anything: `BilateralTrades` is a compliance table this view
+only ever reads, and a session trade belongs to the Add Trade page's list —
+neither is a scheduling view's to destroy. If real deletion is wanted, it
+should be a deliberate, confirmed action on the page that owns the trade,
+not a hover affordance on a board.
+
+**Auto-layout appends.** A square with no stored position takes the first
+*free* slot down its own side, skipping slots already occupied — so a trade
+entered mid-session lands at the bottom of its side rather than underneath
+an existing square. (Placing by count alone doesn't do this: squares that
+already have a position aren't in the count, so a newcomer gets slot 0.)
+
+**The suggestion algorithm is still a placeholder**, as flagged below: every
+hour both sides still have open, at the smaller of the two remaining MW (and
+for a market, the other side's whole open position, since a sink has no
+schedule to overlap with). It's the variant that can't over-commit either
+side, which makes it a safe thing to argue *from* rather than an answer.
+
+**Deliberately not enforced:** over-allocation is possible, because the
+trader can overwrite any suggestion. It's flagged on the square's tooltip
+rather than clamped — a first answer to the reconciliation question below,
+and the easiest one to reverse.
+
+**Three things to know before editing the component.**
+
+- `revision` is the redraw switch. The component rebuilds only when it
+  changes, which is what keeps a dragged square where the trader put it
+  through the reruns their own dragging causes. Anything that genuinely
+  changes the board has to be hashed into `board_revision()`.
+- Every event carries a `seq` **and an `instance` id**. Streamlit hands a
+  component's last value back on *every* rerun, so without `seq` a drag
+  would re-fire on every later rerun. But `seq` counts only within one
+  loaded iframe, and Streamlit rebuilds that iframe on every page
+  navigation — the counter restarts at 0 while the watermark in session
+  state survives. That made a fresh frame's first events look stale and get
+  silently dropped until the counter climbed past the old mark: *links that
+  just didn't happen*, as often as not, with no pattern to it (it depended
+  on how much you'd clicked before navigating away). The `instance` id is
+  what distinguishes "counter restarted" from "event replayed".
+- **Gesture state must never outlive its gesture.** A pointerup released
+  outside the iframe never arrives, so a drag can be left hanging — and
+  since pointerup checks `chipDown`, then `moving`, then `linking` in
+  order, a stale one *hijacks the next gesture*: a forgotten chip press
+  turned the next link drag into a bid-panel open and swallowed the link.
+  Pointer capture keeps the release from being lost in the first place;
+  `resetGesture()` on every pointerdown makes a missed one harmless.
+
+### Downstream bid files — SWPW built, more to come
+
+Clicking a market chip (not dragging it — that still starts a link) opens a
+builder for that market's own bid file. **SWPW is the only one built**;
+clicking any other market chip says so rather than doing nothing.
+
+**The desk's own rule, not derived from the trade data:**
+
+    linked to a MAG buy  -> SHORT position at the seller's GCA (Source > SWPW)
+    linked to a MAG sale -> LONG position at the buyer's LCA  (SWPW > Sink)
+
+because a physical buy needs the seller's generation wheeled *into* SPP (an
+export/short at the GCA), and a physical sale needs power wheeled *out of*
+SPP into the buyer's load (an import/long at the LCA).
+
+**The workflow, as specified:** click the chip → one line per counterparty,
+its 24-hour SWPW position already aggregated (every link touching that
+counterparty and that market, summed) → the trader types the GCA (short) or
+LCA (long) to bid at and a price, and can **+ Split** a counterparty across
+more than one code, editing each split's own hour-by-hour MW → **Generate
+Bid File** writes the `.xlsm`. A split's hours are validated live: every
+active split needs a code and a price, and across a counterparty's splits,
+every hour must add back up to exactly what the aggregate schedule carries
+— nothing invented, nothing dropped.
+
+**The format was reverse-engineered from the desk's own files**, not from a
+spec — every file under `Z:\Bids\BID Positionnement SPP\BID Bilateral SPP`
+(27 days, plus a blank "TEST" template) was read before writing a line of
+code. What that confirmed, and what stayed a genuine open question, is in
+`data/bidfiles/swpw.py`'s own module docstring — the short version:
+
+- Header convention `SPP-SHORT(<code>)` / `SPP-LONG(<code>)`, one MW+Price
+  column-pair per bid line. The same code can legitimately appear on two
+  separate, un-merged columns — confirmed live in the history (two
+  different-valued "GWA" short columns on three separate days) — so a
+  split never needs to merge into an existing line with the same code.
+- Four rows (`Hour Transaction`, `Code de stratégie`, `Code vérification`,
+  `Is NE DAM`) are the same default in literally every one of the 27 real
+  files, so they're just always written that way.
+- ~~The `1*`/`2*`/`3*` rows' meaning couldn't be determined.~~ **Solved —
+  they're a timezone artifact.** See *Hours are EPT, the app is PPT* below.
+- **Generated fresh each time**, not by copying a prior day's file: the
+  desk's real files reuse the same lettered column for different GCA/LCA
+  codes from one day to the next, which isn't something to reproduce
+  programmatically without guessing at the manual convention behind it.
+
+**Hours are EPT, the app is PPT.** The sheet's hour column is labeled
+"HE EPT" — Eastern — while everything in this app is Pacific
+(`domain.options.TIME_ZONE`). Every hour is shifted +3 on the way in
+(`domain.bidfiles.ppt_to_ept`); both are US zones on the same DST
+schedule, so the offset is a constant 3 hours year-round and needs no
+timezone library. PPT HE1 is EPT HE4, and the last three hours of a PPT
+day fall after midnight Eastern.
+
+**That is what the `1*`/`2*`/`3*` rows are**: HE1-3 of the *next* EPT day,
+where PPT HE22/23/24 land. The desk's own files confirm it twice over — a
+full-day GWA position fills exactly 24 slots running EPT HE4-24 plus those
+three stars, and an LL position fills EPT HE4-9 plus `2*`/`3*`, which is
+precisely PPT HE1-6 + HE23-24, the off-peak shape from
+`domain.shapes.build_schedule`, and a nonsense shape read any other way.
+EPT HE1-3 stay empty because they belong to the *previous* PPT flow date,
+which is exactly what every real file shows.
+
+**Price is a plain trader entry**, deliberately — every real file's Price
+column is a flat, manually-chosen number per line (`-1`, `0`, `50`, ...),
+never something derivable from the underlying trade's own price, so the
+popup just asks for it.
+
+**Safety, matching the app's existing conventions:** `write_bid_file`
+refuses to overwrite an existing file for that date without `overwrite=True`
+— the popup shows the conflict and asks for an explicit tick, the same
+two-step confirmation `ui.actions` already uses for a past-dated trade.
+
+**Currently in test mode.** `data/bidfiles/swpw.py::TEST_MODE` is `True`, so
+every generated file is written as `BID officiel Bilateral SPP - test
+emilio.xlsm` instead of the real dated name — the desk's actual submissions
+are never touched while this is being tried out. Flip `TEST_MODE` to `False`
+(or call `official_filename()` directly) to go live; nothing else about the
+file changes.
+
+**Genuinely macro-enabled, not just named `.xlsm`.** A first version wrote a
+plain workbook straight to a `.xlsm` name — Excel refused to open it
+outright ("the file format or file extension is not valid"), not a warning
+to click through. A `.xlsm`'s macro-enabled-ness is real OOXML content, not
+just its extension. The fix attaches a real macro-enabled file's zip as
+`Workbook.vba_archive` before saving (`data/bidfiles/swpw.py`'s
+`_save_as_macro_enabled` — the same mechanism `load_workbook(path,
+keep_vba=True)` uses internally); the shell's own macro content is
+irrelevant, only its presence is borrowed. The blank `TEST.xlsm` template
+serves as that shell, since it always exists and, unlike a dated file,
+never goes away.
+
 ### Decided so far
 
 - **Persistence: session-only for now.** Links don't need to survive
@@ -181,29 +411,70 @@ SWPP, AESO, CEN.
 
 ### Still open
 
-- **Canvas implementation.** Drag-to-link, a hover-triggered `+` button,
-  and dynamic connecting lines aren't things plain Streamlit widgets do.
-  Decided: **prototype both** before committing —
-  (a) a **custom component** (e.g. wrapping React Flow, Cytoscape.js, or
-  similar, embedded via `streamlit.components.v1`) for the literal
-  drag/hover/animated-line experience, at the cost of a separate
-  engineering track from the rest of the app, or
-  (b) a **native Streamlit approximation** — click-select two squares and
-  press "Link" instead of dragging, expand a drill-down inline instead of
-  a true highlight-and-focus — faster to build, staying in the existing
-  stack, but diverging from the drag/hover spec as described.
-  Next step when Phase 2 starts: small spikes of both, then decide.
-- **The link-schedule suggestion algorithm** (see Linking, above).
-- **The exact market list and tickers** (see Market squares, above).
+- ~~**Canvas implementation.**~~ **Settled: the custom component.** Both
+  were built. The native-Streamlit approximation (select two squares, press
+  a button; a read-only SVG map below the board) lost on use — too tall,
+  squares too big, too many clicks. The component is hand-written vanilla
+  JS rather than React Flow or Cytoscape, which removes the "separate
+  engineering track" objection that made this a hard call.
+- **The link-schedule suggestion algorithm** (see Linking, above). A
+  placeholder is in place; it is explicitly not the answer.
+- **The exact market list and tickers** (see Market squares, above). The
+  list as given — CAISO, SWPW, SWPP, AESO, CEN — is what's wired in.
 - **MW/hour reconciliation semantics**: does a match need its linked
   quantities to net to zero (a buy fully covered by its linked sells), or
   is partial/open linking a normal, expected state alongside the "open
-  positions" row at the top?
-- **Source of candidate buys/sells**: trades already written to
-  `BilateralTrades`, trades in the running session's local list (Phase 1's
-  `st.session_state.trades`), or both? Session-only link persistence
-  doesn't by itself resolve this — it's about where the *trades* being
-  matched come from, not where the *links* are kept.
+  positions" row at the top? Assumed for now: **partial is normal**, and
+  over-allocation is a warning, not a block.
+- **Source of candidate buys/sells** — **first answer: both.** The view
+  reads `BilateralTrades` for the flow date *and* this session's own
+  `st.session_state.trades`, with a source filter to drop either. A session
+  trade that carries `db_trade_ids` is skipped, so a trade written to the DB
+  is counted once, from the DB.
+- **Downstream bid files for markets other than SWPW** (CAISO, SWPP, AESO,
+  CEN) — see below. Each has its own real format to reverse-engineer the
+  same way SWPW's was; none of that work has started.
+- ~~**The `1*`/`2*`/`3*` bid-file rows' meaning.**~~ **Settled: HE1-3 of
+  the next EPT day**, where the last three hours of a PPT day land. See
+  *Hours are EPT, the app is PPT*, above.
+- **Whether SWPW's `TEST_MODE` should stay a code constant** or become a
+  real "test vs. live" toggle in the UI once more than one person is using
+  this — a constant is fine while it's just being tried out.
+
+### Opened by building it
+
+- **Grain, again: one DB row or one trade?** A Phase 1 trade writes one
+  `BilateralTrades` row per He-shape/MW level (`compress_schedule`), and the
+  table has no column grouping those rows back into the trade they came
+  from. So a leg entered with a hand-edited grid shows as **several squares
+  on the same flow date**. They're left separate, since the row is the only
+  thing with a stable identity to hang a link off. Merging them by shared
+  terms (trade date + PSE + POR/POD + side + price) is possible but would
+  guess at which rows belong together.
+- **Where do square positions belong?** They're per session, in
+  `st.session_state.mv_positions`, keyed by leg key and measured in board
+  pixels. Two consequences worth a decision: a trader's layout is gone when
+  the session ends, and it doesn't survive a browser resize gracefully
+  (positions are clamped, not rescaled). Persisting a layout — and whether
+  it should be per trader or per desk — is a real question if the manual
+  arrangement turns out to be something people invest in.
+- **Should `×` ever really delete?** It hides, for the reasons above. If the
+  answer is that a trader genuinely needs to remove a mistaken trade from
+  here, that's a destructive write to a compliance table and wants a
+  confirmation step and an audit trail, not a reuse of this affordance.
+- ~~**Should a filtered-out square's links still be honoured?**~~
+  **Settled: yes, for PSE/POR-POD, via one-hop rescue** (see *Filtering
+  shows more, not less*, above). Still open: whether the **source** filter
+  (Database / This session) should get the same treatment — it currently
+  can't, without always loading both sources regardless of the checkboxes.
+- **Refresh vs. caching.** The book is cached for 60 seconds with a manual
+  Refresh. Whether that's the right trade-off depends on how many people are
+  entering trades at once.
+- **Auto-layout on a busy day.** Squares stack down each side and wrap into
+  a second column at about 9 per column. A day with 40 legs a side will
+  overflow the 520 px canvas. Options when that bites: a taller board, a
+  scrolling canvas, zoom, or grouping by PSE — not worth choosing between
+  until it's an actual problem.
 
 ### What Phase 1 already provides to build on
 

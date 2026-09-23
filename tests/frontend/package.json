@@ -1,0 +1,8 @@
+{
+  "name": "scheduling-helper-frontend-checks",
+  "private": true,
+  "description": "jsdom harness for components/trade_board — see board_checks.js. Run `npm install` here once, then `pytest` picks it up; without it those checks skip.",
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

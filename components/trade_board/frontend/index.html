@@ -1,0 +1,638 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f4f5f7;
+    --text: #17181c;
+    --muted: rgba(23, 24, 28, 0.58);
+    --edge: rgba(23, 24, 28, 0.16);
+    --buy: #1f9254;
+    --sell: #d0453f;
+    --market: #7a4ddb;
+    --wire: rgba(66, 133, 244, 0.5);
+    --wire-lit: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: transparent; color: var(--text);
+    font-family: "Source Sans Pro", -apple-system, system-ui, sans-serif;
+    overflow: hidden; user-select: none; -webkit-user-select: none;
+  }
+  #board {
+    position: relative; width: 100%; background: var(--panel);
+    border: 1px solid var(--edge); border-radius: 8px; overflow: hidden;
+    touch-action: none;
+  }
+  #wires { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* While a link is being dragged the wires must not swallow the drop:
+     elementFromPoint would otherwise return a line lying over the target. */
+  #board.linking #wires { pointer-events: none; }
+  .lane {
+    position: absolute; top: 6px; font-size: 10px; font-weight: 700;
+    letter-spacing: .09em; color: var(--muted); pointer-events: none;
+  }
+
+  .sq {
+    position: absolute; width: 150px; height: 46px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--edge);
+    border-left: 4px solid var(--edge);
+    padding: 5px 7px 0 8px; cursor: grab;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  /* No overflow:hidden here — it clipped the + grip, which straddles the
+     square's edge by design. The two text lines clip themselves instead. */
+  .sq.dragging { cursor: grabbing; box-shadow: 0 6px 18px rgba(0,0,0,.22); z-index: 40; }
+  .sq.buy  { border-left-color: var(--buy); }
+  .sq.sell { border-left-color: var(--sell); }
+  .sq.mkt  { border-left-color: var(--market); border-style: dashed; }
+  .sq.sel  { outline: 2px solid var(--wire-lit); outline-offset: 1px; }
+  .sq.dim  { opacity: .32; }
+  .sq.target { outline: 2px dashed var(--wire-lit); outline-offset: 1px; }
+
+  .nm { font-size: 12px; font-weight: 700; line-height: 14px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dt { font-size: 10px; line-height: 12px; color: var(--muted);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%;
+         background: rgba(23,24,28,.10); }
+  .bar > i { display: block; height: 100%; background: var(--wire-lit); }
+  .sq.full .bar > i { background: var(--buy); }
+
+  .grip {
+    position: absolute; top: 50%; margin-top: -9px; width: 18px; height: 18px;
+    border-radius: 50%; background: var(--wire-lit); color: #fff;
+    font-size: 14px; line-height: 17px; text-align: center; font-weight: 700;
+    cursor: crosshair; opacity: 0; transition: opacity .1s; z-index: 30;
+  }
+  .sq:hover .grip, .grip.on { opacity: 1; }
+  .sq.buy  .grip { right: -9px; }
+  .sq.sell .grip { left: -9px; }
+  .sq.mkt  .grip { display: none; }
+
+  /* Visible at rest, not hover-only: an affordance nobody can see is one
+     nobody uses. Sized for a comfortable click rather than the smallest
+     glyph that fits. */
+  .kill {
+    position: absolute; top: 1px; right: 1px; width: 19px; height: 19px;
+    border-radius: 4px; text-align: center; line-height: 18px; font-size: 14px;
+    color: var(--muted); cursor: pointer; opacity: .45; z-index: 31;
+  }
+  .sq:hover .kill { opacity: .9; }
+  .kill:hover { background: var(--sell); color: #fff; opacity: 1; }
+  /* Keep the name clear of it. */
+  .nm { padding-right: 18px; }
+
+  #rail {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+    display: flex; align-items: center; padding: 0 10px;
+    border-top: 1px solid var(--edge); background: var(--bg);
+  }
+  /* A flex item that truncates, NOT an absolutely-positioned one: as an
+     overlay it painted on top of the chips (positioned boxes win over
+     in-flow ones) and quietly ate every drop aimed at them, because
+     elementFromPoint returned the hint instead of the chip.
+
+     Its flex-basis is 0, matching #rail::after below, so the two grow by
+     equal amounts regardless of the hint text's own length — that's what
+     actually centers #chipRow between them, not any property of the chips. */
+  #hint {
+    flex: 1 1 0; min-width: 0; font-size: 10.5px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+  }
+  /* The balancing spacer on the other side of the chip row — a generated
+     box, so centering #chipRow needs no extra markup. */
+  #rail::after { content: ""; flex: 1 1 0; }
+  #chipRow {
+    display: flex; flex: 0 0 auto;
+    /* Wide on purpose: several link lines can converge on this row, and
+       chips sitting close together made it hard to tell which line ended
+       at which one. */
+    gap: 32px;
+  }
+  .chip {
+    font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: 11px;
+    border: 1px dashed var(--edge); color: var(--muted); white-space: nowrap;
+  }
+  .chip.used { border-style: solid; border-color: var(--market);
+               color: var(--market); background: rgba(122,77,219,.08); }
+  .chip.target { outline: 2px dashed var(--wire-lit); outline-offset: 1px; }
+  /* A link can start at a market as readily as at a trade. */
+  .chip { cursor: crosshair; }
+  .chip:hover { border-color: var(--wire-lit); color: var(--wire-lit); }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center;
+           justify-content: center; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="board">
+  <svg id="wires"></svg>
+  <div id="rail"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------- protocol
+function post(type, data) {
+  window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data || {}), "*");
+}
+function setHeight(h) { post("streamlit:setFrameHeight", {height: h}); }
+function emit(payload) {
+  payload.seq = ++seq;
+  payload.instance = INSTANCE;
+  post("streamlit:setComponentValue", {value: payload, dataType: "json"});
+}
+
+// ------------------------------------------------------------------ state
+
+// `seq` only orders events *within one loaded iframe* — it restarts at 0
+// every time this frame is re-created, which Streamlit does whenever the
+// page is navigated away from and back. Python dedupes on seq, so a bare
+// counter meant a fresh frame's first events looked like already-applied
+// ones and were silently dropped until it climbed past the old high-water
+// mark — interactions that just did nothing, with no pattern to it. The
+// instance id is what tells Python "this is a new frame, its counter
+// started over"; see ui.scheduling.board.handle_event.
+var INSTANCE = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
+var seq = 0;
+var S = {
+  revision: null, squares: [], links: [], markets: [], pos: {},
+  selected: null, height: 520, boardH: 520
+};
+var board = document.getElementById("board");
+var wires = document.getElementById("wires");
+var rail  = document.getElementById("rail");
+var nodes = {};                       // key -> element
+var SQ_W = 150, SQ_H = 46, GAP = 7, PAD = 20, RAIL_H = 30;
+
+var MIN_BOARD_H = 360, BOTTOM_GAP = 26;
+
+/** Fill the window from wherever the board starts down to the bottom.
+ *
+ *  Streamlit sizes a component's iframe from setFrameHeight, so a component
+ *  that wants the rest of the page has to measure it: the host page's
+ *  viewport, minus where this iframe begins. Both reads need the host to be
+ *  same-origin, which it is when Streamlit serves the component itself — but
+ *  an embedding could break that, so a failure falls back to the height
+ *  Python asked for rather than collapsing the board. */
+function availableHeight(fallback) {
+  try {
+    var frame = window.frameElement;
+    var viewport = window.parent.innerHeight;
+    if (frame && viewport) {
+      var top = frame.getBoundingClientRect().top;
+      return Math.max(MIN_BOARD_H, Math.floor(viewport - top - BOTTOM_GAP));
+    }
+  } catch (e) {
+    // Cross-origin host: measuring isn't allowed, so take what we're given.
+  }
+  return Math.max(MIN_BOARD_H, fallback);
+}
+
+function applyTheme(t) {
+  if (!t) return;
+  var r = document.documentElement.style;
+  r.setProperty("--bg", t.backgroundColor || "#fff");
+  r.setProperty("--panel", t.secondaryBackgroundColor || "#f4f5f7");
+  r.setProperty("--text", t.textColor || "#17181c");
+  if (t.font) document.body.style.fontFamily = t.font;
+  var dark = (t.base === "dark");
+  r.setProperty("--muted", dark ? "rgba(250,250,250,.60)" : "rgba(23,24,28,.58)");
+  r.setProperty("--edge",  dark ? "rgba(250,250,250,.22)" : "rgba(23,24,28,.16)");
+}
+
+// ------------------------------------------------------------------ layout
+function laneX(side, column) {
+  var w = board.clientWidth;
+  return side === "buy"
+    ? PAD + column * (SQ_W + GAP)
+    : w - PAD - SQ_W - column * (SQ_W + GAP);
+}
+
+function slotsPerColumn() {
+  return Math.max(1, Math.floor((S.boardH - RAIL_H - PAD * 2) / (SQ_H + GAP)));
+}
+function slotXY(side, n, perCol) {
+  return [laneX(side, Math.floor(n / perCol)), PAD + (n % perCol) * (SQ_H + GAP)];
+}
+function overlaps(p, taken) {
+  return taken.some(function (t) {
+    return Math.abs(t[0] - p[0]) < SQ_W && Math.abs(t[1] - p[1]) < SQ_H;
+  });
+}
+
+/** Auto-place any square the trader hasn't moved: buys down the left, sells
+ *  down the right, wrapping into a second column so the middle stays clear
+ *  for the links.
+ *
+ *  Slots already occupied — by a square placed on an earlier render, or one
+ *  dragged somewhere by hand — are skipped, so a trade entered mid-session
+ *  lands at the bottom of its own side instead of underneath an existing
+ *  square. (Placing by count alone doesn't do this: squares that already
+ *  have a position aren't in the count, so a newcomer would be handed
+ *  slot 0.) */
+function layoutMissing() {
+  var perCol = slotsPerColumn();
+  ["buy", "sell"].forEach(function (side) {
+    var mine = S.squares.filter(function (s) { return s.side === side; });
+    var taken = [];
+    mine.forEach(function (s) { if (S.pos[s.key]) taken.push(S.pos[s.key]); });
+
+    var slot = 0;
+    mine.forEach(function (s) {
+      if (S.pos[s.key]) return;
+      var p = slotXY(side, slot, perCol);
+      while (overlaps(p, taken) && slot < 500) {
+        slot++;
+        p = slotXY(side, slot, perCol);
+      }
+      S.pos[s.key] = p;
+      taken.push(p);
+      slot++;
+    });
+  });
+}
+
+function clampAll() {
+  var w = board.clientWidth, h = S.boardH;
+  Object.keys(S.pos).forEach(function (k) {
+    var p = S.pos[k];
+    S.pos[k] = [
+      Math.max(2, Math.min(p[0], w - SQ_W - 2)),
+      Math.max(2, Math.min(p[1], h - RAIL_H - SQ_H - 2))
+    ];
+  });
+}
+
+// ------------------------------------------------------------------- build
+function el(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c];
+  });
+}
+
+function build() {
+  Object.keys(nodes).forEach(function (k) { nodes[k].remove(); });
+  nodes = {};
+
+  S.squares.forEach(function (sq) {
+    var d = el("div", "sq " + sq.side + (sq.is_market ? " mkt" : ""));
+    d.dataset.key = sq.key;
+    d.appendChild(el("div", "nm", esc(sq.name)));
+    d.appendChild(el("div", "dt", esc(sq.detail)));
+    var bar = el("div", "bar");
+    var fill = el("i");
+    fill.style.width = Math.round(100 * (sq.matched_frac || 0)) + "%";
+    bar.appendChild(fill);
+    d.appendChild(bar);
+    if (sq.matched_frac >= 0.999) d.classList.add("full");
+    if (!sq.is_market) {
+      var g = el("div", "grip", "+");
+      g.title = "Drag onto the other side to link";
+      d.appendChild(g);
+    }
+    var k = el("div", "kill", "×");
+    k.title = "Clear this square off the board (nothing is deleted)";
+    d.appendChild(k);
+    d.title = sq.title || "";
+    board.appendChild(d);
+    nodes[sq.key] = d;
+  });
+
+  rail.innerHTML = "";
+  var hint = el("div", null, "Drag to move · drag <b>+</b> or a market chip onto the other side to link · click a link to edit · <b>×</b> clears a square");
+  hint.id = "hint";
+  rail.appendChild(hint);
+  // Its own row, centered in the rail by the flex-basis-0 spacers on either
+  // side of it (#hint above, #rail::after in CSS) — not by anything on the
+  // chips themselves.
+  var chipRow = el("div");
+  chipRow.id = "chipRow";
+  S.markets.forEach(function (m) {
+    var c = el("div", "chip" + (m.mwh ? " used" : ""), esc(m.mwh ? m.name + " " + m.mwh : m.name));
+    c.dataset.market = m.name;
+    chipRow.appendChild(c);
+  });
+  rail.appendChild(chipRow);
+
+  if (!S.squares.length) {
+    var none = el("div", null, "No trades on this flow date.");
+    none.id = "empty";
+    board.appendChild(none);
+    nodes["__empty__"] = none;
+  }
+  paint();
+}
+
+function paint() {
+  S.squares.forEach(function (sq) {
+    var d = nodes[sq.key];
+    if (!d || !S.pos[sq.key]) return;
+    var p = S.pos[sq.key] || [0, 0];
+    d.style.left = p[0] + "px";
+    d.style.top = p[1] + "px";
+    d.classList.toggle("sel", S.selected === sq.key);
+    d.classList.toggle("dim", !!S.selected && !sq.related);
+  });
+  drawWires();
+}
+
+function centre(key) {
+  var p = S.pos[key];
+  if (!p) return null;
+  return [p[0] + SQ_W / 2, p[1] + SQ_H / 2];
+}
+function marketAnchor(name) {
+  var c = rail.querySelector('[data-market="' + CSS.escape(name) + '"]');
+  if (!c) return null;
+  return [c.offsetLeft + c.offsetWidth / 2, rail.offsetTop + 4];
+}
+
+function anchors(a, b) {
+  // Leave from whichever edge faces the other square, so a line never
+  // crosses the box it starts from.
+  var dir = b[0] >= a[0] ? 1 : -1;
+  return [[a[0] + dir * SQ_W / 2, a[1]], [b[0] - dir * SQ_W / 2, b[1]]];
+}
+
+function drawWires() {
+  while (wires.firstChild) wires.removeChild(wires.firstChild);
+  var maxMwh = 1;
+  S.links.forEach(function (l) { if (l.mwh > maxMwh) maxMwh = l.mwh; });
+
+  S.links.forEach(function (l) {
+    var a = centre(l.buy_key) || marketAnchor(l.buy_market);
+    var b = centre(l.sell_key) || marketAnchor(l.sell_market);
+    if (!a || !b) return;
+    var pts = (S.pos[l.buy_key] && S.pos[l.sell_key]) ? anchors(a, b) : [a, b];
+    var p0 = pts[0], p1 = pts[1];
+    var mx = (p0[0] + p1[0]) / 2;
+    var d = "M " + p0[0] + " " + p0[1] + " C " + mx + " " + p0[1] + ", " + mx + " " + p1[1] + ", " + p1[0] + " " + p1[1];
+    var lit = !S.selected || l.related;
+    var w = 2 + 9 * (l.mwh / maxMwh);
+
+    var hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("fill", "none");
+    hit.setAttribute("stroke", "transparent");
+    hit.setAttribute("stroke-width", "18");
+    hit.style.cursor = "pointer";
+    hit.style.pointerEvents = "stroke";
+    hit.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+    hit.addEventListener("click", function (e) {
+      e.stopPropagation();
+      emit({type: "link_click", link_id: l.link_id});
+    });
+    var t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    t.textContent = l.label || "";
+    hit.appendChild(t);
+
+    var vis = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    vis.setAttribute("d", d);
+    vis.setAttribute("fill", "none");
+    vis.setAttribute("stroke", lit ? "var(--wire-lit)" : "var(--wire)");
+    vis.setAttribute("stroke-width", w.toFixed(1));
+    vis.setAttribute("stroke-linecap", "round");
+    vis.setAttribute("opacity", lit ? "0.95" : "0.22");
+    vis.style.pointerEvents = "none";
+
+    wires.appendChild(vis);
+    wires.appendChild(hit);
+  });
+
+  if (rubber) wires.appendChild(rubber);
+}
+
+// -------------------------------------------------------------- dragging
+var moving = null, linking = null, rubber = null, movedPx = 0;
+//: A chip press that hasn't yet moved past the click/drag threshold —
+//: {market, x, y} (the pointerdown position). Resolves either into a real
+//: link drag (startLink) or a "chip_click" event, mirroring how a square
+//: itself already tells a click from a drag via `movedPx`.
+var chipDown = null;
+var CHIP_CLICK_THRESHOLD = 4;
+
+function startLink(spec) {
+  linking = spec;
+  board.classList.add("linking");
+  rubber = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  rubber.setAttribute("fill", "none");
+  rubber.setAttribute("stroke", "var(--wire-lit)");
+  rubber.setAttribute("stroke-width", "3");
+  rubber.setAttribute("stroke-dasharray", "5 4");
+  rubber.style.pointerEvents = "none";
+  wires.appendChild(rubber);
+}
+
+/** Where the rubber band is anchored — a square's centre, or a market chip. */
+function linkOrigin() {
+  return linking.fromMarket ? marketAnchor(linking.fromMarket) : centre(linking.from);
+}
+
+/** Abandon any half-finished gesture and clean up after it.
+ *
+ *  A pointerup released outside this iframe never reaches us, so a gesture
+ *  can be left hanging — and because pointerup checks chipDown, then
+ *  moving, then linking in order, a stale one *hijacks the next gesture*:
+ *  a forgotten chip press would turn the next link drag into a bid-panel
+ *  open and swallow the link. Pointer capture below is the real fix; this
+ *  makes a missed release harmless rather than poisonous. */
+function resetGesture() {
+  if (moving && nodes[moving.key]) nodes[moving.key].classList.remove("dragging");
+  if (rubber) { rubber.remove(); rubber = null; }
+  board.classList.remove("linking");
+  board.querySelectorAll(".target").forEach(function (n) { n.classList.remove("target"); });
+  moving = linking = chipDown = null;
+}
+
+board.addEventListener("pointerdown", function (e) {
+  resetGesture();
+  // Route every later event for this pointer here, even if it leaves the
+  // iframe — without it, releasing outside the frame loses the pointerup
+  // and strands the gesture (see resetGesture).
+  try { board.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
+
+  var chip = e.target.closest(".chip");
+  if (chip) {
+    e.preventDefault();
+    // Not started yet — a plain click (no drag) opens that market's bid
+    // panel instead, so this waits to see which one it turns out to be.
+    chipDown = {market: chip.dataset.market, x: e.clientX, y: e.clientY};
+    return;
+  }
+  var kill = e.target.closest(".kill");
+  var grip = e.target.closest(".grip");
+  var sq = e.target.closest(".sq");
+  if (kill && sq) {
+    e.preventDefault();
+    e.stopPropagation();
+    emit({type: "dismiss", key: sq.dataset.key});
+    return;
+  }
+  if (grip && sq) {
+    e.preventDefault();
+    startLink({from: sq.dataset.key, side: sq.classList.contains("buy") ? "buy" : "sell"});
+    return;
+  }
+  if (sq) {
+    e.preventDefault();
+    var r = board.getBoundingClientRect();
+    var p = S.pos[sq.dataset.key];
+    moving = {key: sq.dataset.key, dx: e.clientX - r.left - p[0], dy: e.clientY - r.top - p[1]};
+    movedPx = 0;
+    sq.classList.add("dragging");
+  }
+});
+
+document.addEventListener("pointermove", function (e) {
+  var r = board.getBoundingClientRect();
+  var x = e.clientX - r.left, y = e.clientY - r.top;
+
+  if (chipDown && !linking) {
+    var moved = Math.abs(e.clientX - chipDown.x) + Math.abs(e.clientY - chipDown.y);
+    if (moved > CHIP_CLICK_THRESHOLD) {
+      startLink({fromMarket: chipDown.market});
+      chipDown = null;
+    } else {
+      return;
+    }
+  }
+  if (moving) {
+    var nx = Math.max(2, Math.min(x - moving.dx, board.clientWidth - SQ_W - 2));
+    var ny = Math.max(2, Math.min(y - moving.dy, S.boardH - RAIL_H - SQ_H - 2));
+    movedPx += Math.abs(nx - S.pos[moving.key][0]) + Math.abs(ny - S.pos[moving.key][1]);
+    S.pos[moving.key] = [nx, ny];
+    var d = nodes[moving.key];
+    d.style.left = nx + "px";
+    d.style.top = ny + "px";
+    drawWires();
+    return;
+  }
+  if (linking) {
+    var a = linkOrigin();
+    if (!a) return;
+    var mx = (a[0] + x) / 2;
+    rubber.setAttribute("d", "M " + a[0] + " " + a[1] + " C " + mx + " " + a[1] + ", " + mx + " " + y + ", " + x + " " + y);
+    var over = dropTarget(e);
+    board.querySelectorAll(".target").forEach(function (n) { n.classList.remove("target"); });
+    if (over) over.el.classList.add("target");
+  }
+});
+
+/** What's under the cursor that this link could land on.
+ *
+ *  From a square: the opposite side, or a market chip. From a market chip:
+ *  any square, since a market has no side of its own until it's told which
+ *  end of a link it is. */
+function dropTarget(e) {
+  var under = document.elementFromPoint(e.clientX, e.clientY);
+  if (!under) return null;
+  var sq = under.closest(".sq");
+
+  if (linking.fromMarket) {
+    if (!sq || sq.classList.contains("mkt")) return null;
+    return {kind: "square", key: sq.dataset.key, el: sq};
+  }
+
+  var chip = under.closest(".chip");
+  if (chip) return {kind: "market", name: chip.dataset.market, el: chip};
+  if (!sq || sq.dataset.key === linking.from) return null;
+  var side = sq.classList.contains("buy") ? "buy" : "sell";
+  if (sq.classList.contains("mkt")) return {kind: "square", key: sq.dataset.key, el: sq};
+  if (side === linking.side) return null;
+  return {kind: "square", key: sq.dataset.key, el: sq};
+}
+
+document.addEventListener("pointerup", function (e) {
+  if (chipDown) {
+    // Released before crossing the drag threshold — a genuine click.
+    emit({type: "chip_click", market: chipDown.market});
+    chipDown = null;
+    return;
+  }
+  if (moving) {
+    var d = nodes[moving.key];
+    if (d) d.classList.remove("dragging");
+    if (movedPx < 4) {
+      emit({type: "select", key: moving.key});
+    } else {
+      emit({type: "move", positions: S.pos});
+    }
+    moving = null;
+    return;
+  }
+  if (linking) {
+    var over = dropTarget(e);
+    board.classList.remove("linking");
+    board.querySelectorAll(".target").forEach(function (n) { n.classList.remove("target"); });
+    if (rubber) { rubber.remove(); rubber = null; }
+    if (over) {
+      if (linking.fromMarket) {
+        emit({type: "link_request", from_market: linking.fromMarket, to: over.key});
+      } else if (over.kind === "market") {
+        emit({type: "link_request", from: linking.from, market: over.name});
+      } else {
+        emit({type: "link_request", from: linking.from, to: over.key});
+      }
+    }
+    linking = null;
+    drawWires();
+  }
+});
+
+board.addEventListener("click", function (e) {
+  if (!e.target.closest(".sq") && !e.target.closest("path") && !e.target.closest(".chip")) {
+    if (S.selected) emit({type: "select", key: null});
+  }
+});
+
+// ------------------------------------------------------------------ render
+window.addEventListener("message", function (event) {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  var args = event.data.args || {};
+  applyTheme(event.data.theme);
+
+  S.height = args.height || 520;
+  S.boardH = availableHeight(S.height);
+  board.style.height = S.boardH + "px";
+
+  if (args.revision !== S.revision) {
+    S.revision = args.revision;
+    S.squares = args.squares || [];
+    S.links = args.links || [];
+    S.markets = args.markets || [];
+    S.selected = args.selected || null;
+    S.pos = Object.assign({}, args.positions || {});
+    layoutMissing();
+    clampAll();
+    build();
+  }
+  setHeight(S.boardH + 4);
+});
+
+// The iframe is resized when the page is, which is the only signal we get
+// that the window changed shape — re-measure and grow or shrink with it.
+window.addEventListener("resize", function () {
+  var h = availableHeight(S.height);
+  if (h !== S.boardH) {
+    S.boardH = h;
+    board.style.height = h + "px";
+    setHeight(h + 4);
+  }
+  clampAll();
+  paint();
+});
+
+post("streamlit:componentReady", {apiVersion: 1});
+setHeight(S.boardH + 4);
+</script>
+</body>
+</html>

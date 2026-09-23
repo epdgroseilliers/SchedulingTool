@@ -1,2 +1,8 @@
 -Add bookout logic
 -Add trade suggestions from repetitive trades 
+-Add the compliance source specified and nws pop-ups
+-Build the scheduling view with downstream bid files and tag building
+-Add coloring for NWS, NCS, SS/ACS attributes
+-Fix bug on schedule start_date and end_date not following the wecc calendar
+-Improve variable schedule entry
+    -Next we need to improve manually entering a variable schedule for a trade. The behavior I observe is that I need to enter each input twice for it to be saved in the data editor: the first entry isn't saved and the widget re renders to its old value, then a second entry correctly changes the widget state.
