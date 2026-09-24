@@ -1,0 +1,467 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f4f5f7;
+    --text: #17181c;
+    --muted: rgba(23, 24, 28, 0.58);
+    --edge: rgba(23, 24, 28, 0.16);
+    --rule: rgba(23, 24, 28, 0.42);
+    --focus: #3b82f6;
+    --bad: rgba(208, 69, 63, 0.18);
+    /* The workbook's own two banner colors — the builder is headed the way
+       the file is, so a trader reading one recognises the other. */
+    --short: #bdd7ee;
+    --long: #fce4d6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: transparent; color: var(--text);
+    font-family: "Source Sans Pro", -apple-system, system-ui, sans-serif;
+    font-size: 14px;
+  }
+
+  /* Centred, because the modal is sized to the grid but has a floor: on a
+     day with one counterparty the grid is narrower than the modal it has
+     to live in, and pinned left it reads as broken rather than small. */
+  #wrap { display: flex; gap: 8px; align-items: flex-start; justify-content: center; }
+  /* Content-width, never stretched: columns wide enough for the numbers in
+     them and no wider is the whole point of the layout. A side too wide for
+     the window shrinks and scrolls rather than squeezing its neighbour. */
+  .panel {
+    min-width: 0; overflow-x: auto; flex: 0 1 auto;
+    border: 1px solid var(--edge); border-radius: 5px; background: var(--bg);
+  }
+  .ttl {
+    font-size: 12px; font-weight: 700; letter-spacing: .05em;
+    padding: 3px 8px; border-bottom: 1px solid var(--edge); white-space: nowrap;
+  }
+  .ttl.SHORT { background: var(--short); }
+  .ttl.LONG  { background: var(--long); }
+  .ttl span { font-weight: 400; color: var(--muted); letter-spacing: 0; }
+
+  /* Fixed layout over an explicit <colgroup>: every column is exactly as
+     wide as it needs to be and no wider. Left to itself the table sizes to
+     content, and an <input>'s *intrinsic* width is around 20 characters —
+     which blew every column out to 139px however narrow the numbers in it. */
+  table { border-collapse: collapse; width: auto; table-layout: fixed; }
+  col.ixc { width: 42px; }
+  col.datac { width: 90px; }
+  th, td {
+    border: 1px solid var(--edge); padding: 0; text-align: center;
+    font-weight: 400; white-space: nowrap;
+  }
+  th { font-size: 12px; font-weight: 600; background: var(--panel); line-height: 20px; }
+  /* The heavier rule marks where one bid line's pair starts — the same
+     grouping the workbook draws with a medium border. */
+  .pair { border-left: 2px solid var(--rule); }
+  .ix { background: var(--panel); color: var(--muted); font-size: 12px; padding: 0 2px; }
+  tbody td { height: 22px; }
+
+  input {
+    width: 100%; min-width: 0; border: 0; background: transparent; color: inherit;
+    font: inherit; text-align: center; padding: 0 2px; height: 100%;
+  }
+  input:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--bg); }
+  input::-webkit-outer-spin-button, input::-webkit-inner-spin-button {
+    -webkit-appearance: none; margin: 0;
+  }
+  td.bad { background: var(--bad); }
+
+  th.code { position: relative; padding-right: 38px; }
+  th.code input { font-weight: 700; font-size: 12px; text-transform: uppercase; }
+  /* Visible at rest rather than on hover: an affordance nobody can see is
+     one nobody uses — the same lesson the board's × taught. */
+  .btn {
+    position: absolute; top: 2px; width: 16px; height: 17px; line-height: 16px;
+    font-size: 14px; text-align: center; cursor: pointer; color: var(--muted);
+    border-radius: 3px; user-select: none;
+  }
+  .btn:hover { background: var(--focus); color: #fff; }
+  .add { right: 2px; }
+  .del { right: 20px; font-size: 12px; }
+  .del:hover { background: #d0453f; }
+
+  tfoot td, tfoot th { font-size: 12px; font-weight: 700; background: var(--panel); color: var(--muted); }
+  #empty { color: var(--muted); padding: 6px; }
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+
+<script>
+// ---------------------------------------------------------------- protocol
+function post(type, data) {
+  window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data || {}), "*");
+}
+function setHeight(h) { post("streamlit:setFrameHeight", {height: h}); }
+
+// Per-frame id + counter, exactly as the trade board does it: `seq` orders
+// events within one loaded iframe and restarts whenever Streamlit rebuilds
+// the frame, so Python needs the instance to tell "counter started over"
+// from "same event replayed". See ui/scheduling/board.py's handle_event.
+var INSTANCE = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10);
+var seq = 0;
+function emit(payload) {
+  payload.seq = ++seq;
+  payload.instance = INSTANCE;
+  post("streamlit:setComponentValue", {value: payload, dataType: "json"});
+}
+
+// ------------------------------------------------------------------- state
+var S = {revision: null, hours: [], sides: [], structure: null};
+var wrap = document.getElementById("wrap");
+// What to put the caret back on after a rebuild: the cell that had it, or
+// a cell that doesn't exist yet (the code box of a split just asked for).
+var lastFocus = null, pendingFocus = null;
+
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function fmt(v) {
+  // Only null is blank — never 0, which is a real price. Which cells come
+  // through empty is decided in Python (ui/scheduling/bidgrid.py::_cells):
+  // an hour a position doesn't flow is blank in the file, and so is its
+  // price, because a price on an hour carrying no MW is a number the file
+  // would never contain.
+  if (v === null || v === undefined || v === "") return "";
+  return String(Math.round(v * 100) / 100);
+}
+function num(s) {
+  var v = parseFloat(String(s == null ? "" : s).replace(/[, ]/g, ""));
+  return isFinite(v) ? v : 0;
+}
+function cellId(side, pse, line, field, hour) {
+  var parts = [side, pse, line, field];
+  if (hour != null) parts.push(hour);
+  return parts.join("|");
+}
+function structureKey(sides) {
+  return (sides || []).map(function (s) {
+    return s.side + ":" + (s.groups || []).map(function (g) {
+      return g.pse + "#" + g.lines.length;
+    }).join(",");
+  }).join("|");
+}
+
+function applyTheme(t) {
+  if (!t) return;
+  var r = document.documentElement.style;
+  r.setProperty("--bg", t.backgroundColor || "#fff");
+  r.setProperty("--panel", t.secondaryBackgroundColor || "#f4f5f7");
+  r.setProperty("--text", t.textColor || "#17181c");
+  if (t.font) document.body.style.fontFamily = t.font;
+  var dark = (t.base === "dark");
+  r.setProperty("--muted", dark ? "rgba(250,250,250,.60)" : "rgba(23,24,28,.58)");
+  r.setProperty("--edge",  dark ? "rgba(250,250,250,.22)" : "rgba(23,24,28,.16)");
+  r.setProperty("--rule",  dark ? "rgba(250,250,250,.50)" : "rgba(23,24,28,.42)");
+  if (dark) {
+    r.setProperty("--short", "#1f3f5c");
+    r.setProperty("--long", "#5c3a24");
+  }
+}
+
+// ------------------------------------------------------------------- build
+function cellInput(side, pse, line, field, hour, value) {
+  var input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.className = "cell";
+  input.value = fmt(value);
+  input.dataset.id = cellId(side, pse, line, field, hour);
+  input.dataset.side = side;
+  input.dataset.pse = pse;
+  input.dataset.line = line;
+  input.dataset.field = field;
+  if (hour != null) input.dataset.hour = hour;
+  return input;
+}
+
+function headerCells(side, group, codeLabel) {
+  /* Level 2: one cell per bid line, spanning its MW/Price pair, holding the
+     GCA/LCA to bid at — plus the + that splits this counterparty into
+     another pair, and (on a split) the × that takes it back. */
+  var cells = [];
+  group.lines.forEach(function (line, i) {
+    var th = el("th", "code" + (i === 0 ? " pair" : ""));
+    th.colSpan = 2;
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "codebox";
+    input.value = line.code || "";
+    input.placeholder = codeLabel;
+    input.title = codeLabel + " to bid this line at";
+    input.dataset.id = cellId(side, group.pse, i, "code");
+    input.dataset.side = side;
+    input.dataset.pse = group.pse;
+    input.dataset.line = i;
+    input.dataset.field = "code";
+    th.appendChild(input);
+
+    var add = el("div", "btn add", "+");
+    add.title = "Split " + group.pse + " across another " + codeLabel;
+    add.dataset.act = "split";
+    add.dataset.side = side;
+    add.dataset.pse = group.pse;
+    add.dataset.line = i;
+    th.appendChild(add);
+
+    if (i > 0) {
+      var del = el("div", "btn del", "×");
+      del.title = "Remove this split";
+      del.dataset.act = "unsplit";
+      del.dataset.side = side;
+      del.dataset.pse = group.pse;
+      del.dataset.line = i;
+      th.appendChild(del);
+    }
+    cells.push(th);
+  });
+  return cells;
+}
+
+function buildPanel(sideData) {
+  var panel = el("div", "panel");
+  panel.dataset.side = sideData.side;
+
+  var title = el("div", "ttl " + sideData.side);
+  title.appendChild(el("b", null, sideData.side));
+  title.appendChild(el("span", null, " — " + sideData.sub));
+  panel.appendChild(title);
+
+  var table = el("table");
+  var colgroup = el("colgroup");
+  colgroup.appendChild(el("col", "ixc"));
+  colgroup.appendChild(el("col", "ixc"));
+  sideData.groups.forEach(function (g) {
+    g.lines.forEach(function () {
+      colgroup.appendChild(el("col", "datac"));
+      colgroup.appendChild(el("col", "datac"));
+    });
+  });
+  table.appendChild(colgroup);
+  var thead = el("thead");
+
+  var r1 = el("tr");
+  var heTh = el("th", "ix", "HE");
+  heTh.rowSpan = 3;
+  heTh.title = "Hour ending, Pacific — the clock the board and the trades use.";
+  var eptTh = el("th", "ix", "EPT");
+  eptTh.rowSpan = 3;
+  eptTh.title = "Where the hour lands in the file, whose hour column is "
+              + "Eastern. 1*/2*/3* are the next Eastern day.";
+  r1.appendChild(heTh);
+  r1.appendChild(eptTh);
+
+  var r2 = el("tr"), r3 = el("tr");
+  sideData.groups.forEach(function (g) {
+    var name = el("th", "pair", g.pse);
+    name.colSpan = g.lines.length * 2;
+    name.title = g.pse + " · " + fmt(g.total) + " MWh through this market";
+    r1.appendChild(name);
+
+    headerCells(sideData.side, g, sideData.code_label).forEach(function (th) {
+      r2.appendChild(th);
+    });
+    g.lines.forEach(function (line, i) {
+      r3.appendChild(el("th", i === 0 ? "pair" : "", "MW"));
+      r3.appendChild(el("th", null, "Price"));
+    });
+  });
+  thead.appendChild(r1);
+  thead.appendChild(r2);
+  thead.appendChild(r3);
+  table.appendChild(thead);
+
+  var tbody = el("tbody");
+  S.hours.forEach(function (hr, row) {
+    var tr = el("tr");
+    tr.appendChild(el("td", "ix", String(hr.he)));
+    tr.appendChild(el("td", "ix", hr.ept));
+    sideData.groups.forEach(function (g) {
+      var bad = (g.bad_hours || {})[String(hr.he)];
+      g.lines.forEach(function (line, i) {
+        var mwTd = el("td", "mw" + (i === 0 ? " pair" : "") + (bad ? " bad" : ""));
+        if (bad) mwTd.title = bad;
+        mwTd.appendChild(cellInput(sideData.side, g.pse, i, "mw", hr.he, line.mw[row]));
+        tr.appendChild(mwTd);
+
+        var prTd = el("td", "pr");
+        prTd.appendChild(cellInput(sideData.side, g.pse, i, "price", hr.he, line.price[row]));
+        tr.appendChild(prTd);
+      });
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  var tfoot = el("tfoot");
+  var tr = el("tr");
+  var label = el("td", "ix", "MWh");
+  label.colSpan = 2;
+  tr.appendChild(label);
+  sideData.groups.forEach(function (g) {
+    g.lines.forEach(function (line, i) {
+      var td = el("td", "tot" + (i === 0 ? " pair" : ""), fmt(line.total));
+      td.dataset.id = cellId(sideData.side, g.pse, i, "total");
+      tr.appendChild(td);
+      tr.appendChild(el("td"));
+    });
+  });
+  tfoot.appendChild(tr);
+  table.appendChild(tfoot);
+
+  panel.appendChild(table);
+  return panel;
+}
+
+function build() {
+  wrap.innerHTML = "";
+  if (!S.sides.length) {
+    var none = el("div", null, "Nothing to bid.");
+    none.id = "empty";
+    wrap.appendChild(none);
+    return;
+  }
+  S.sides.forEach(function (sideData) { wrap.appendChild(buildPanel(sideData)); });
+  restoreFocus();
+}
+
+/** Put the caret back where the trader left it.
+ *
+ *  Every edit round-trips through Python — that's what keeps the rebalance
+ *  rule in one place — and a rebuild without this would drop focus on every
+ *  one of them. A split focuses its *new* code box instead, so a trader can
+ *  click + and keep typing. */
+function restoreFocus() {
+  var want = pendingFocus || lastFocus;
+  pendingFocus = null;
+  if (!want) return;
+  var input = wrap.querySelector('input[data-id="' + want.replace(/"/g, '\\"') + '"]');
+  if (!input) return;
+  input.focus();
+  if (input.select) input.select();
+}
+
+/** Update values without touching the DOM structure.
+ *
+ *  The common case by far: a typed MW rebalances its siblings, and every
+ *  other cell on the panel is unchanged. Patching leaves the element the
+ *  trader is typing in alone (and never overwrites it), so the round trip
+ *  is invisible to them. */
+function patch() {
+  S.sides.forEach(function (sideData) {
+    sideData.groups.forEach(function (g) {
+      g.lines.forEach(function (line, i) {
+        var code = wrap.querySelector('input[data-id="' + cellId(sideData.side, g.pse, i, "code") + '"]');
+        if (code && code !== document.activeElement) code.value = line.code || "";
+        var total = wrap.querySelector('[data-id="' + cellId(sideData.side, g.pse, i, "total") + '"]');
+        if (total) total.textContent = fmt(line.total);
+
+        S.hours.forEach(function (hr, row) {
+          ["mw", "price"].forEach(function (field) {
+            var id = cellId(sideData.side, g.pse, i, field, hr.he);
+            var input = wrap.querySelector('input[data-id="' + id + '"]');
+            if (!input) return;
+            // The *value* of the cell being typed in is left alone; its
+            // warning is not. An hour stops reconciling because of what is
+            // being typed right now, so waiting for the caret to leave
+            // before saying so is exactly backwards.
+            if (field === "mw") {
+              var bad = (g.bad_hours || {})[String(hr.he)];
+              input.parentNode.classList.toggle("bad", !!bad);
+              input.parentNode.title = bad || "";
+            }
+            if (input !== document.activeElement) {
+              input.value = fmt(field === "mw" ? line.mw[row] : line.price[row]);
+            }
+          });
+        });
+      });
+    });
+  });
+}
+
+// -------------------------------------------------------------- interaction
+wrap.addEventListener("focusin", function (e) {
+  if (e.target.dataset && e.target.dataset.id) lastFocus = e.target.dataset.id;
+});
+
+wrap.addEventListener("change", function (e) {
+  var d = e.target.dataset;
+  if (!d || !d.field) return;
+  if (d.field === "code") {
+    // Upper-cased on the way out, not just in the CSS: the cell *shows*
+    // uppercase, and a code stored as typed would put something else in
+    // the file than the trader read back — every code in the desk's real
+    // files is uppercase anyway.
+    emit({type: "code", side: d.side, pse: d.pse, line: +d.line,
+          value: e.target.value.trim().toUpperCase()});
+  } else if (d.field === "mw") {
+    emit({type: "mw", side: d.side, pse: d.pse, line: +d.line,
+          hour: +d.hour, value: num(e.target.value)});
+  } else if (d.field === "price") {
+    // One price per bid line — that's what reaches the file — so any cell
+    // of the column sets it for the day.
+    emit({type: "price", side: d.side, pse: d.pse, line: +d.line,
+          value: e.target.value.trim() === "" ? null : num(e.target.value)});
+  }
+});
+
+wrap.addEventListener("keydown", function (e) {
+  var d = e.target.dataset;
+  if (!d || !d.field || e.key !== "Enter") return;
+  e.preventDefault();
+  e.target.blur();                       // commits, which emits the change
+  if (d.hour == null) return;
+  var next = wrap.querySelector(
+    'input[data-id="' + cellId(d.side, d.pse, d.line, d.field, +d.hour + 1) + '"]'
+  );
+  if (next) { next.focus(); next.select(); }
+});
+
+wrap.addEventListener("click", function (e) {
+  var btn = e.target.closest(".btn");
+  if (!btn) return;
+  var d = btn.dataset;
+  if (d.act === "split") {
+    // The new pair lands right after this one, and gets the caret.
+    pendingFocus = cellId(d.side, d.pse, +d.line + 1, "code");
+    emit({type: "split", side: d.side, pse: d.pse, line: +d.line});
+  } else if (d.act === "unsplit") {
+    emit({type: "unsplit", side: d.side, pse: d.pse, line: +d.line});
+  }
+});
+
+// ------------------------------------------------------------------ render
+window.addEventListener("message", function (event) {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  var args = event.data.args || {};
+  applyTheme(event.data.theme);
+
+  S.hours = args.hours || [];
+  S.sides = args.sides || [];
+  var structure = structureKey(S.sides);
+
+  if (structure !== S.structure) {
+    S.structure = structure;
+    S.revision = args.revision;
+    build();
+  } else if (args.revision !== S.revision) {
+    S.revision = args.revision;
+    patch();
+  }
+  setHeight(document.body.scrollHeight + 2);
+});
+
+post("streamlit:componentReady", {apiVersion: 1});
+setHeight(200);
+</script>
+</body>
+</html>

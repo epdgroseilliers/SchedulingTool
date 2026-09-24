@@ -7,12 +7,15 @@ Pure: builds its own legs/links rather than going through the board.
 from datetime import date
 
 from domain.bidfiles import (
+    DEFAULT_PRICE,
     LONG,
     SHORT,
+    blank_line,
     build_bid_lines,
     is_active,
     market_groups,
     ppt_to_ept,
+    rebalance_hour,
     validate_split,
 )
 from domain.matching import BUY, SELL, Link, TradeLeg, market_leg_key
@@ -117,6 +120,66 @@ class TestPptToEpt:
             (4, False), (5, False), (6, False), (7, False), (8, False), (9, False),
             (2, True), (3, True),
         ]
+
+
+class TestBlankLine:
+    def test_a_short_opens_at_zero_and_a_long_at_fifty(self):
+        assert blank_line(SHORT)["price"] == 0.0
+        assert blank_line(LONG)["price"] == 50.0
+        assert DEFAULT_PRICE == {SHORT: 0.0, LONG: 50.0}
+
+    def test_it_carries_no_code_and_copies_any_schedule_given(self):
+        schedule = {7: 100.0}
+        line = blank_line(SHORT, schedule)
+        assert line["code"] == ""
+        assert line["mw_by_hour"] == schedule
+        line["mw_by_hour"][8] = 50.0
+        assert schedule == {7: 100.0}  # a copy, not the caller's dict
+
+    def test_a_fresh_split_starts_empty(self):
+        # What "+ Split" adds: no MW at all, so the first line still holds
+        # the whole position until the trader moves some of it across.
+        assert blank_line(SHORT)["mw_by_hour"] == {}
+
+
+class TestRebalanceHour:
+    def test_the_other_line_takes_the_rest(self):
+        # The everyday case: 100 MW split two ways, the trader types 40
+        # into the new column and the original drops to 60 on its own.
+        assert rebalance_hour([100.0, 0.0], 1, 40.0, 100.0) == [60.0, 40.0]
+
+    def test_it_works_the_same_from_the_first_column(self):
+        assert rebalance_hour([100.0, 0.0], 0, 70.0, 100.0) == [70.0, 30.0]
+
+    def test_a_single_line_is_left_alone(self):
+        # Nothing to rebalance against; validate_split reports the gap.
+        assert rebalance_hour([100.0], 0, 60.0, 100.0) == [60.0]
+
+    def test_three_lines_share_the_residual_in_proportion(self):
+        assert rebalance_hour([60.0, 30.0, 10.0], 0, 20.0, 100.0) == [20.0, 60.0, 20.0]
+
+    def test_an_all_empty_remainder_lands_on_the_first_of_them(self):
+        assert rebalance_hour([0.0, 0.0, 0.0], 2, 30.0, 100.0) == [70.0, 0.0, 30.0]
+
+    def test_an_entry_over_the_day_is_kept_and_the_others_go_to_zero(self):
+        # Not trimmed back: validate_split reports the overrun rather than
+        # this quietly rewriting what was just typed.
+        assert rebalance_hour([100.0, 0.0], 1, 150.0, 100.0) == [0.0, 150.0]
+
+    def test_taking_the_whole_hour_empties_the_others(self):
+        assert rebalance_hour([60.0, 40.0], 0, 100.0, 100.0) == [100.0, 0.0]
+
+    def test_a_negative_entry_is_floored_at_zero(self):
+        assert rebalance_hour([100.0, 0.0], 1, -5.0, 100.0) == [100.0, 0.0]
+
+    def test_the_hour_still_adds_up_exactly_despite_rounding(self):
+        out = rebalance_hour([50.0, 50.0], 0, 10.0, 100.0)
+        assert sum(out) == 100.0
+
+    def test_a_thirds_split_still_adds_up_exactly(self):
+        out = rebalance_hour([10.0, 10.0, 10.0], 0, 1.0, 100.0)
+        assert out[0] == 1.0
+        assert sum(out) == 100.0
 
 
 class TestIsActive:

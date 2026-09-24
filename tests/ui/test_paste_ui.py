@@ -3,8 +3,9 @@ form, build the schedule, and never touch the database or add a trade by
 itself. See tests/README.md for the WECC calendar DB dependency.
 """
 
-from datetime import date, timedelta
+from datetime import date
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from tests.conftest import APP_PATH
@@ -163,25 +164,23 @@ class TestNoDateFallsBackToTradeDate:
 
 
 class TestNoDateWithIsDamFollowsCalendar:
-    """The exact reported bug: pasting a string with no flow date, IsDAM
-    checked, only ever produced a single-day block — even when the WECC
-    calendar's next two days were both on-peak. Now the default End Date
-    follows domain.shapes.dam_default_end_date instead of always matching
-    Start Date. See tests/ui/test_schedule_ui.py for the domain-level and
-    non-paste UI coverage of dam_default_end_date itself.
+    """A string with no flow date falls back to the same dates a fresh
+    block gets: the flow dates the WECC calendar pairs with the trade date
+    (ui.session.block_date_defaults). See tests/ui/test_schedule_ui.py for
+    the non-paste coverage of that, and tests/domain/test_trade.py for the
+    rule itself.
     """
 
-    def test_hl_default_end_date_follows_the_calendar(self):
-        from domain.shapes import dam_default_end_date
+    def test_the_dates_are_the_calendars_own_session(self):
+        from ui.session import block_date_defaults
 
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()
         trade_date = at.session_state["trade_date"]
         _paste(at, "APS sells 25mw hl at pv for pv+0.5")
         assert not at.error, [e.value for e in at.error]
         ss = at.session_state
-        expected_start = trade_date + timedelta(days=1)  # IsDAM defaults to True
-        assert ss["start_0"] == expected_start
-        assert ss["end_0"] == dam_default_end_date(expected_start, "HL")
+        # IsDAM defaults to True.
+        assert (ss["start_0"], ss["end_0"]) == block_date_defaults(trade_date, True)
 
     def test_reverting_to_a_dateless_string_recomputes_the_calendar_default(self):
         # The reported bug: paste a dateless string (correct, multi-day
@@ -202,16 +201,14 @@ class TestNoDateWithIsDamFollowsCalendar:
         # the old, buggy implementation) — this test instead locks in that
         # apply_parsed_string's own computation is correct, which is the
         # part that actually matters and the part a regression could break.
-        from domain.shapes import dam_default_end_date
+        from ui.session import block_date_defaults
 
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()
         trade_date = at.session_state["trade_date"]
         dateless = "EPE buys 100mw he17-22 springer $88"
-        expected_start = trade_date + timedelta(days=1)
-        expected_end = dam_default_end_date(expected_start, "17-22")
-        assert expected_end > expected_start, (
-            "test needs a real multi-day calendar run to be meaningful"
-        )
+        expected_start, expected_end = block_date_defaults(trade_date, True)
+        if expected_end == expected_start:
+            pytest.skip("today's trading session covers a single flow date")
 
         _paste(at, dateless)
         assert at.session_state["end_0"] == expected_end
@@ -223,17 +220,17 @@ class TestNoDateWithIsDamFollowsCalendar:
         assert at.session_state["start_0"] == expected_start
         assert at.session_state["end_0"] == expected_end
 
-    def test_custom_shape_default_also_follows_the_calendar(self):
-        from domain.shapes import dam_default_end_date
+    def test_a_custom_shape_gets_the_same_session(self):
+        # The session belongs to the trade date, not to which hours are
+        # being bought within it.
+        from ui.session import block_date_defaults
 
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()
         trade_date = at.session_state["trade_date"]
         _paste(at, "APS sells 25mw he7-22 at pv for pv+0.5")
         assert not at.error, [e.value for e in at.error]
         ss = at.session_state
-        expected_start = trade_date + timedelta(days=1)
-        assert ss["start_0"] == expected_start
-        assert ss["end_0"] == dam_default_end_date(expected_start, "7-22")
+        assert (ss["start_0"], ss["end_0"]) == block_date_defaults(trade_date, True)
 
     def test_explicit_weekday_in_the_string_overrides_the_calendar_default(self):
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()

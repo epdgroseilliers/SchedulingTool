@@ -1,9 +1,12 @@
 """Rendering helpers shared across the Scheduling View's popups.
 
-Just the one-row, HE1..HE24 hour editor so far — `links.py` (the link
-schedule popup) and `bidfile.py` (the SWPW bid-file builder) both need the
-exact same "edit one day's 24 hours" widget and shouldn't each keep their
-own copy of it.
+Just the one-row, HE1..HE24 hour editor so far — the link schedule popup's
+(`links.py`), where one allocation reads best laid out the same wide way
+the Add Trade grid lays a schedule out.
+
+The bid-file builder deliberately doesn't use it: that one shows several
+bid lines at once and mirrors the workbook it writes, hours down the side —
+see `bidfile.py`.
 """
 
 import streamlit as st

@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG
+
 PAGE_PATH = str(Path(__file__).resolve().parents[2] / "pages" / "1_Scheduling_View.py")
 
 FLOW = date.today() + timedelta(days=1)
@@ -68,8 +70,22 @@ def _emit(at, event):
 
 
 def _click(at, label):
-    [b for b in at.button if b.label == label][0].click().run()
+    [b for b in _in_dialog(at).button if b.label == label][0].click().run()
     return at
+
+def _in_dialog(at):
+    """Tell the page its modal is still open.
+
+    A real click inside a dialog reruns the *fragment*; AppTest only does
+    full script runs, and a full run with a dialog still flagged open is
+    exactly what a dismissal looks like to
+    ui.scheduling.state.dialog_was_dismissed. Without this, every step taken
+    inside a modal here would read as "the trader pressed Esc".
+    """
+    at.session_state[BIDFILE_DIALOG] = False
+    at.session_state[LINK_DIALOG] = False
+    return at
+
 
 
 class TestPageRenders:

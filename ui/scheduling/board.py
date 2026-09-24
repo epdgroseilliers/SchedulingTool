@@ -32,11 +32,11 @@ from ui.scheduling.state import (
     store_positions,
 )
 
-#: Fallback height, in px. The component measures the real viewport and
-#: fills what's left below the filter row; this is only what it falls back
-#: to when it can't (an unusual embedding, or a browser that won't let it
-#: read the parent frame's geometry).
-BOARD_HEIGHT = 560
+#: The canvas's *minimum* height, in px. It sizes itself to the day — the
+#: busier side's squares plus two squares' clear space above the market
+#: rail — so this only matters on a near-empty board, where there still has
+#: to be somewhere to drag something to.
+MIN_BOARD_HEIGHT = 240
 
 
 def _square(leg, links, related):
@@ -159,7 +159,7 @@ def render_board(legs, links, flow_date):
         positions=st.session_state.get("mv_positions", {}),
         selected=selected,
         revision=board_revision(flow_date, legs, links, selected),
-        height=BOARD_HEIGHT,
+        height=MIN_BOARD_HEIGHT,
     )
     return handle_event(event, legs, flow_date)
 

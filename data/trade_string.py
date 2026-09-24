@@ -39,6 +39,7 @@ import re
 # Extend as new shorthand turns up. Keys are matched case-insensitively.
 COUNTERPARTY_ALIASES = {
     "APS": "AZPS",
+    "SCL": "SCLM",
     "BPA": "BPAT",
     "PGE": "PGEM",
     "SCE": "SCET",
@@ -89,6 +90,16 @@ ACS_SOURCES = {
     "BPAT": "Bonneville Power Administration",
     "TPWP": "Tacoma Power - ACS",
     "SCLM": "Seattle City Light - ACS",
+}
+
+# SS = Specified Source. Unlike ACS it doesn't name one, it only says there
+# is one — so which it means is again a property of the counterparty. A
+# counterparty with no entry here leaves the field empty with a warning
+# rather than failing the paste: "SS" is a flag, not a claim about which
+# plant, so there's nothing to guess wrong, and the trader sets it in the
+# form. (ACS *is* such a claim, which is why an unmapped one is an error.)
+SS_SOURCES = {
+    "SCLM": "Boundary Dam Hydro",
 }
 
 # How the trade was communicated, matched case-insensitively against the
@@ -673,6 +684,7 @@ def parse_trade_string(
         result.fields["communication"] = ParsedField(value, m.group(0).strip())
 
     acs = scanner.take(r"\bacs\b")
+    ss = scanner.take(r"\bss\b")
 
     m = scanner.take(r"\bat\s+([a-z0-9._]+)")
     location_token = m.group(1) if m else None
@@ -714,6 +726,19 @@ def parse_trade_string(
         else:
             result.fields["specified_source"] = ParsedField(
                 source, f"ACS ({counterparty})", "derived"
+            )
+
+    if ss:
+        counterparty = result.get("counterparty")
+        source = SS_SOURCES.get(counterparty)
+        if source is None:
+            result.warnings.append(
+                f"'SS' was used but no specified source is mapped for "
+                f"{counterparty or 'this counterparty'} — set it by hand."
+            )
+        else:
+            result.fields["specified_source"] = ParsedField(
+                source, f"SS ({counterparty})", "derived"
             )
 
     _derive_index_from_location(result)

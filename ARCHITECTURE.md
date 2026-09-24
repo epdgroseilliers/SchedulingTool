@@ -31,9 +31,10 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 data.bilateral.compress_schedule), the buy/sell link model,
                 and the open-position arithmetic over it.
   bidfiles.py   Phase 2: grouping a market's links by counterparty into
-                SHORT/LONG bid lines, and validating a trader's split of
-                one into more than one GCA/LCA. Market-agnostic; the
-                per-market file format lives in data/bidfiles/.
+                SHORT/LONG bid lines, validating a trader's split of one
+                into more than one GCA/LCA, and rebalancing the rest of a
+                split when they change one of its hours. Market-agnostic;
+                the per-market file format lives in data/bidfiles/.
 
 ui/           Streamlit rendering, one module per page section. Each
               render_*() function returns what it collected (a dict, a
@@ -67,17 +68,26 @@ ui/           Streamlit rendering, one module per page section. Each
                    its JSON payload, and its events -> state changes.
     links.py       The schedule popup (create and edit are one modal) and
                    the detail strip under the board.
-    bidfile.py     The downstream bid-file builder, opened by a plain click
-                   on a market chip (dragging it still starts a link) —
-                   SWPW only so far.
-    widgets.py     The one shared bit of rendering between links.py and
-                   bidfile.py: the one-row, HE1..HE24 hour editor.
+    bidfile.py     The dialog around the bid-file builder, opened by a plain
+                   click on a market chip (dragging it still starts a link)
+                   — SWPW only so far: the caption, what doesn't reconcile,
+                   Preview and Generate.
+    bidgrid.py     The adapter for the bid_grid component: a market's
+                   grouped position -> its payload, its events -> state. It
+                   also sizes the modal, since Python is the only side that
+                   knows how many columns there will be before the grid is
+                   drawn.
+    widgets.py     The one-row, HE1..HE24 hour editor — the link schedule
+                   popup's (links.py). The bid-file builder has its own
+                   component.
 
 data/         External state: the database and the WECC calendar. Nothing
               in this package is specific to how the page looks.
   db.py          SQLAlchemy engines (two servers: the app's own, and the
                  one holding PhysiqueBilateral).
-  calendar.py    WECC on-/off-peak calendar, cached.
+  calendar.py    WECC calendar, cached: each flow date's on-/off-peak flag,
+                 and the trading session (TradeDate) it belongs to, which
+                 is what a block's default date range comes from.
   bilateral.py   Everything that reads or writes
                  PhysiqueBilateral.west.BilateralTrades — schedule
                  compression, DB lookups, duplicate check, the insert
@@ -101,6 +111,15 @@ components/   Streamlit custom components — the one place in the repo that
                  clickable link lines. One static index.html speaking the
                  component postMessage protocol — no npm build step. Knows
                  nothing about trades; ui.scheduling.board translates.
+  bid_grid/      The bid-file builder's table: both sides at once, hours down
+                 the index, a three-level header (counterparty > GCA/LCA >
+                 MW & Price) with a + on each code cell that splits it.
+                 st.data_editor can do neither — it flattens a MultiIndex to
+                 single-level names, and a header cell is nowhere a widget
+                 can go. Same no-build-step shape as trade_board; knows
+                 nothing about markets or trades, ui.scheduling.bidgrid
+                 translates, and the rebalancing a typed MW causes stays in
+                 domain.bidfiles rather than being written twice.
 ```
 
 ## Where new logic goes
@@ -125,14 +144,17 @@ which runs the real script and lets you set widget values and inspect
 component's iframe. Two halves, split deliberately so as much as possible
 falls on the testable side:
 
-- Everything the component *could* decide but doesn't — what a square says,
-  which ones are dimmed, when the board may rebuild — lives in
-  `ui/scheduling/board.py` and is tested as plain functions.
+- Everything a component *could* decide but doesn't — what a square says,
+  which ones are dimmed, when the board may rebuild, what a typed MW does to
+  the rest of a split — lives in `ui/scheduling/board.py`, `bidgrid.py` and
+  `domain/bidfiles.py`, and is tested as plain functions.
 - What only a browser can do is driven through jsdom by
-  `tests/frontend/board_checks.js` (run by `tests/ui/test_board_frontend.py`,
-  skipped without node + jsdom).
+  `tests/frontend/board_checks.js` and `bid_grid_checks.js` (run by
+  `test_board_frontend.py` / `test_bidgrid_frontend.py`, skipped without
+  node + jsdom).
 
 A component's value lands in `session_state` under its key like any
 widget's, so `at.session_state["mv_board"] = {...}` is exactly what the real
 frontend does when a trader drags something — which is how the page's
-event handling is tested end to end.
+event handling is tested end to end. The bid grid works the same way
+through `mv_bidgrid`.

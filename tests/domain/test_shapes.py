@@ -1,14 +1,12 @@
 """domain.shapes — shape parsing is pure; build_schedule's on_peak/off_peak
 branches need the live WECC calendar (marked db), flat/custom don't."""
 
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 
 from domain.shapes import (
-    DAM_DEFAULT_LOOKAHEAD_DAYS,
     build_schedule,
-    dam_default_end_date,
     generate_block_grid,
     monthly_block_rows,
     parse_shape,
@@ -168,66 +166,6 @@ class TestMonthlyBlockRows:
         assert len(rows) == 1
         assert rows[0]["he"] == "HL"
         assert len(errors) == 1
-
-
-class TestDamDefaultEndDateInvalidShape:
-    """An unparseable shape can't be reasoned about at all, so the default
-    End Date is always just the Start Date — and, since that's decided
-    before ever consulting the calendar, this doesn't need the DB."""
-
-    def test_invalid_shape_stays_a_single_day(self):
-        d = date(2026, 9, 18)
-        assert dam_default_end_date(d, "garbage") == d
-
-
-@pytest.mark.db
-class TestDamDefaultEndDateCalendarDriven:
-    """Every shape (HL, LL, ATC, or a custom hour range) extends the
-    default End Date through the WECC calendar's run of consecutive days
-    sharing the Start Date's own peak/off-peak status — e.g. a peak Friday
-    immediately followed by a peak Saturday belongs to the same DAM leg.
-    This is a *default* only: an explicit date the parser read from the
-    string (a weekday, or a literal MM/DD) always overrides it — see
-    ui.paste.apply_parsed_string. Checked against the live calendar itself
-    rather than hardcoded exact dates, so this doesn't rot as the calendar
-    (which is real, mutable data) changes over time.
-    """
-
-    def test_extends_through_the_run_of_matching_peak_status(self):
-        from data.calendar import is_peak_map
-
-        start = date(2026, 9, 15)
-        end = dam_default_end_date(start, "HL")
-        assert end >= start
-
-        peak_map = is_peak_map(start, end + timedelta(days=1))
-        start_is_peak = peak_map.get(start)
-        d = start
-        while d <= end:
-            assert peak_map.get(d) == start_is_peak
-            d += timedelta(days=1)
-
-        # The day after `end` must break the run — differ from the start
-        # day's status, or be missing from the calendar — unless the
-        # lookahead window itself was exhausted first.
-        after_status = peak_map.get(end + timedelta(days=1))
-        assert after_status != start_is_peak or (
-            (end - start).days >= DAM_DEFAULT_LOOKAHEAD_DAYS
-        )
-
-    def test_hl_ll_atc_and_custom_extend_through_the_same_run(self):
-        # Which hours get used differs (on-peak, off-peak, every hour, or
-        # an explicit hour range), but all four follow the same day-by-day
-        # peak/off-peak continuity for the *date range* itself.
-        start = date(2026, 9, 18)
-        hl_end = dam_default_end_date(start, "HL")
-        assert dam_default_end_date(start, "LL") == hl_end
-        assert dam_default_end_date(start, "ATC") == hl_end
-        assert dam_default_end_date(start, "7-22") == hl_end
-
-    def test_missing_calendar_data_falls_back_to_a_single_day(self):
-        far_future = date(2099, 1, 1)
-        assert dam_default_end_date(far_future, "HL") == far_future
 
 
 @pytest.mark.db

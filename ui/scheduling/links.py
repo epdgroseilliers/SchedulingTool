@@ -11,7 +11,9 @@ import streamlit as st
 
 from domain.matching import links_for, open_by_hour, suggest_allocation
 from ui.scheduling.state import (
+    LINK_DIALOG,
     close_popup,
+    dialog_was_dismissed,
     commit_link,
     find_link,
     focused_key,
@@ -39,6 +41,11 @@ def render_popup(legs, links, flow_date):
     pending = st.session_state.mv_pending
     editing = st.session_state.mv_editing
     if not pending and not editing:
+        return
+    # Every button in here closes the popup before rerunning, so a page run
+    # that still finds it open means it was dismissed instead.
+    if dialog_was_dismissed(LINK_DIALOG):
+        close_popup()
         return
 
     @st.dialog("Link schedule", width="large")

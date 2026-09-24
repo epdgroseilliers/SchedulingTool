@@ -5,8 +5,9 @@ Add Trade; the logic lives in `domain/matching.py` (pure), `data/matching.py`
 (the book), `ui/scheduling/` (the adapters) and `components/trade_board/`
 (the canvas itself). See PROJECT.md for what this view is for.
 
-Everything above the board is one row, and the board fills what's left of
-the window — it sizes itself to the viewport rather than to a constant here.
+Everything above the board is one row, and the board takes the full width
+and sizes its own height to the day's busier side — neither is a constant
+here.
 """
 
 import streamlit as st

@@ -108,53 +108,6 @@ def monthly_block_rows(blocks):
     return rows, errors
 
 
-#: How far ahead to look when extending a DAM block's default End Date —
-#: comfortably past any realistic weekend/holiday run of same-peak-status
-#: days.
-DAM_DEFAULT_LOOKAHEAD_DAYS = 14
-
-
-def dam_default_end_date(start_date, shape):
-    """The default End Date to pair with a DAM block's default Start Date,
-    for any shape (HL, LL, ATC, or a custom hour range).
-
-    A day-ahead trade's flow naturally continues through every following
-    day that shares the start date's own on-/off-peak status — e.g. a
-    Friday (peak) immediately followed by a peak Saturday belongs to the
-    same DAM leg — so this extends day by day until the run breaks (or the
-    calendar has no data for the next day). This is only ever the
-    *default*: an explicit date the trader typed, or that the broker-string
-    parser read from the string itself (a weekday like "Sun only", or a
-    literal "9/18"), always wins — see ui.paste.apply_parsed_string, which
-    only falls back to this default when the string carries no date of its
-    own.
-    """
-    try:
-        parse_shape(shape)
-    except ValueError:
-        return start_date
-
-    try:
-        peak_map = is_peak_map(
-            start_date, start_date + timedelta(days=DAM_DEFAULT_LOOKAHEAD_DAYS)
-        )
-    except Exception:
-        # A calendar hiccup here shouldn't block the page from rendering —
-        # falls back to a single day, same as a shape with no peak/off-peak
-        # notion; clicking Generate explicitly still surfaces the error.
-        return start_date
-    start_is_peak = peak_map.get(start_date)
-    if start_is_peak is None:
-        return start_date
-
-    end_date = start_date
-    d = start_date + timedelta(days=1)
-    while peak_map.get(d) == start_is_peak:
-        end_date = d
-        d += timedelta(days=1)
-    return end_date
-
-
 def build_schedule(start_date, end_date, kind, mw, custom_start_he=None, custom_end_he=None):
     """Determine which hours get `mw` for each date in [start_date, end_date],
     using the WECC calendar to decide which hours are on-/off-peak per day.

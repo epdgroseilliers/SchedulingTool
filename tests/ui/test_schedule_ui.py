@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from domain.shapes import dam_default_end_date
+from ui.session import block_date_defaults
 from tests.conftest import APP_PATH
 
 
@@ -153,42 +153,90 @@ class TestIsDamDrivesDefaultDates:
         assert all(s == today for s in starts)
 
 
-class TestDamDefaultEndDateThroughTheApp:
-    """A fresh IsDAM block's default End Date follows the WECC calendar for
-    every shape (see domain.shapes.dam_default_end_date) rather than
-    always matching Start Date — the reported bug: pasting a string with
-    no flow date, IsDAM checked, only ever produced a single-day block
-    even when the next two calendar days were both on-peak.
+class TestDamDefaultDatesThroughTheApp:
+    """A fresh IsDAM block's Start/End dates are the flow dates the WECC
+    calendar pairs with the trade date — one trading session, which is
+    usually one day but covers the weekend from a Thursday or Friday. It's
+    read from the calendar's own TradeDate column rather than inferred:
+    guessing it from runs of matching peak status put every Monday-to-
+    Thursday trade's end date on the following Saturday.
     """
 
-    def test_end_date_matches_dam_default_end_date(self):
+    def test_the_dates_are_the_calendars_own_session(self):
         at = _run()
         d = {x.label: x for x in at.date_input}
-        start = d["Start Date"].value
-        assert d["End Date"].value == dam_default_end_date(start, "HL")
+        trade_date = d["Trade Date"].value
+        assert (d["Start Date"].value, d["End Date"].value) == block_date_defaults(
+            trade_date, True
+        )
 
-    def test_atc_shape_also_follows_the_calendar_default(self):
+    @staticmethod
+    def _a_day_with_no_session():
+        """A real date the calendar has no trading session on, found in the
+        calendar rather than hardcoded — it's live, mutable data."""
+        from data.calendar import sessions_near
+
+        today = date.today()
+        sessions = sessions_near(today)
+        if not sessions:
+            pytest.skip("the WECC calendar could not be read")
+        for offset in range(0, 8):
+            day = today + timedelta(days=offset)
+            if day not in sessions:
+                return day
+        pytest.skip("the calendar has a session every day this week")
+
+    @staticmethod
+    def _a_trading_day():
+        from data.calendar import sessions_near
+
+        today = date.today()
+        sessions = sessions_near(today)
+        upcoming = [d for d in sessions if d >= today]
+        if not upcoming:
+            pytest.skip("no upcoming trading session in the calendar")
+        return min(upcoming)
+
+    def test_a_date_with_no_session_turns_the_trade_real_time(self):
+        # There is no day-ahead market on a Saturday, so IsDAM goes off and
+        # can't be put back on, and the flow date is the trade date.
+        closed = self._a_day_with_no_session()
         at = AppTest.from_file(APP_PATH, default_timeout=90)
         at.run()
-        at.text_input(key="shape_0").set_value("ATC").run()
-        d = {x.label: x for x in at.date_input}
-        start = d["Start Date"].value
-        assert d["End Date"].value == dam_default_end_date(start, "ATC")
+        at.date_input(key="trade_date").set_value(closed).run()
+        assert at.session_state["is_dam"] is False
+        assert at.checkbox(key="is_dam").disabled
+        ss = at.session_state
+        assert ss["start_0"] == ss["end_0"] == closed
 
-    def test_custom_hour_range_also_follows_the_calendar_default(self):
+    def test_returning_to_a_trading_day_gives_the_box_back(self):
+        # A mistyped weekend date must not silently leave the next trade
+        # real-time.
         at = AppTest.from_file(APP_PATH, default_timeout=90)
         at.run()
+        at.date_input(key="trade_date").set_value(self._a_day_with_no_session()).run()
+        at.date_input(key="trade_date").set_value(self._a_trading_day()).run()
+        assert at.session_state["is_dam"] is True
+        assert not at.checkbox(key="is_dam").disabled
+
+    def test_but_a_deliberate_real_time_choice_survives_the_detour(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=90)
+        at.run()
+        at.checkbox(key="is_dam").set_value(False).run()
+        at.date_input(key="trade_date").set_value(self._a_day_with_no_session()).run()
+        at.date_input(key="trade_date").set_value(self._a_trading_day()).run()
+        assert at.session_state["is_dam"] is False
+
+    def test_the_shape_does_not_change_them(self):
+        # The session is a property of the trade date, not of which hours
+        # are being bought within it.
+        at = AppTest.from_file(APP_PATH, default_timeout=90)
+        at.run()
+        before = {x.label: x.value for x in at.date_input}
         at.text_input(key="shape_0").set_value("7-22").run()
         d = {x.label: x for x in at.date_input}
-        start = d["Start Date"].value
-        assert d["End Date"].value == dam_default_end_date(start, "7-22")
-
-    def test_invalid_shape_stays_a_single_day_even_with_isdam_on(self):
-        at = AppTest.from_file(APP_PATH, default_timeout=90)
-        at.run()
-        at.text_input(key="shape_0").set_value("garbage").run()
-        d = {x.label: x for x in at.date_input}
-        assert d["Start Date"].value == d["End Date"].value
+        assert d["Start Date"].value == before["Start Date"]
+        assert d["End Date"].value == before["End Date"]
 
     def test_a_multi_day_default_is_populated_from_the_calendar_not_zero(self):
         at = _run()

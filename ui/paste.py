@@ -17,9 +17,8 @@ from domain.options import (
     PARSED_COMMUNICATION,
     SPECIFIED_SOURCES,
 )
-from domain.shapes import dam_default_end_date
-from domain.trade import default_block_start, format_price
-from ui.session import dates_last_default_keys
+from domain.trade import format_price
+from ui.session import block_date_defaults, dates_last_default_keys
 
 
 def apply_parsed_string(text):
@@ -100,11 +99,7 @@ def apply_parsed_string(text):
         # over by this point, so that fallback silently leaves the
         # displayed dates stuck at whatever they last were.
         is_dam = st.session_state.get("is_dam", True)
-        default_start = default_block_start(trade_date, is_dam)
-        default_end = (
-            dam_default_end_date(default_start, parsed.get("shape"))
-            if is_dam else default_start
-        )
+        default_start, default_end = block_date_defaults(trade_date, is_dam)
         st.session_state.start_0 = default_start
         st.session_state.end_0 = default_end
         last_start_key, last_end_key = dates_last_default_keys(0)

@@ -22,8 +22,21 @@ schedule, and write it to the back office database.
 ### What a trader does
 
 1. Set **Trade Date** and **IsDAM** (day-ahead vs. real-time) — this is
-   context set *before* anything else, because IsDAM drives the schedule's
-   default flow date and everything downstream reads it.
+   context set *before* anything else, because together they decide the
+   schedule's default flow dates and everything downstream reads them. A
+   real-time trade flows the day it's traded; a day-ahead one takes the
+   flow dates the **WECC calendar itself pairs with that trade date**
+   (`TradeDate` in `WECC_PowerCalendar_Detailed` — one trading session,
+   usually one day, but a Thursday or Friday can cover the weekend). That
+   pairing is read, never inferred: an earlier version extended the end
+   date through runs of matching peak/off-peak days and put every Monday-
+   to-Wednesday trade's end on the following Saturday. **A trade date the
+   calendar has no session for at all** — a weekend, a holiday — has no
+   day-ahead market to trade in, so it can only be a real-time trade:
+   IsDAM unticks itself and is disabled, and the flow date is the trade
+   date. It's given back the moment the trade date is a trading day again,
+   so a mistyped weekend date can't silently leave the next trade RT — but
+   a real-time choice the trader made themselves is never overridden.
 2. Either **paste a broker string** from ICE Chat (`APS SELLS/MAG BUYS
    100 MWS HE18-HE21 PV FIXED $73 flow 9/15 wspp sched c`) and let it fill
    the form, or fill the form by hand. The paste box sits beside Trade
@@ -59,8 +72,12 @@ the mirrored verb when only the counterparty is named), counterparty
 resolution through alias/exact/full-name/fuzzy matching, MW, shape/hour
 range, four price forms (`FIXED $N`, bare `$N`, `for <node>±N`, `@ index
 ±N` — which derives the node from the location), specified source
-(including `ACS` → the counterparty's Asset Controlling Supplier),
-`nws`/`ncs` flags, and flow dates — numeric (`flow 9/15`, with or without
+(including `ACS` → the counterparty's Asset Controlling Supplier, and `SS`
+→ whichever specified source that counterparty means by it, Seattle City
+Light's being Boundary Dam Hydro — `SS` names no plant of its own, so an
+unmapped counterparty warns and leaves the field to the trader, where an
+unmapped `ACS`, which *is* a claim about one, is an error), `nws`/`ncs`
+flags, and flow dates — numeric (`flow 9/15`, with or without
 the word "date"), a range, or a bare weekday (`Mon only` → the nearest
 occurrence of that weekday **on or after the Trade Date**, not the real
 wall-clock date — a trader back-entering a past trade needs relative dates
@@ -85,10 +102,10 @@ hand-edit that breaks the pattern falls back to an explicit range.
 
 - **Option lists are seeded, not exhaustive.** `domain/options.py`'s
   `COUNTERPARTIES`/`LOCATIONS`/etc. and `data/trade_string.py`'s alias
-  tables (`COUNTERPARTY_ALIASES`, `LOCATION_ALIASES`, `ACS_SOURCES`, ...)
+  tables (`COUNTERPARTY_ALIASES`, `LOCATION_ALIASES`, `ACS_SOURCES`, `SS_SOURCES`, ...)
   grow as real desk shorthand turns up. An unrecognized token is a reported
   error, never a silent guess.
-- **A committed `tests/` suite now exists** (202 tests: `domain/`, `data/`
+- **A committed `tests/` suite now exists** (500+ tests: `domain/`, `data/`
   pure and `db`-marked, `ui/` via `AppTest`) — see `tests/README.md`. Run
   `pytest` for the fast, network-independent tier, `pytest --run-db` to
   include the ones hitting a live DB. Never call `insert_trade()` for real
@@ -182,10 +199,11 @@ SWPP, AESO, CEN.
 
 **Where the code sits.** `domain/matching.py` (pure: re-expansion, links,
 open-position arithmetic), `data/matching.py` (the flow date's book),
-`components/trade_board/` (the canvas), `ui/scheduling/` (the adapters
-between them), and `pages/1_Scheduling_View.py` wiring it together. Adding
-`pages/` makes this a Streamlit multipage app; `app.py` stays the entry
-script and the Add Trade page.
+`components/trade_board/` (the canvas) and `components/bid_grid/` (the
+bid-file builder's table), `ui/scheduling/` (the adapters between them), and
+`pages/1_Scheduling_View.py` wiring it together. Adding `pages/` makes this
+a Streamlit multipage app; `app.py` stays the entry script and the Add Trade
+page.
 
 **The canvas is a custom component**, `components/trade_board/` — one static
 `index.html` speaking Streamlit's component postMessage protocol directly.
@@ -200,6 +218,11 @@ markets as plain JSON and has no idea what a leg or a WECC calendar is.
 Everything it could decide but shouldn't (what a square says, which are
 dimmed, when the board may rebuild) is computed in `ui/scheduling/board.py`,
 so it stays testable.
+
+The bid-file builder's grid (`components/bid_grid/`, added later) follows
+the same pattern for the same reasons — and it's worth noting the rule that
+decided it both times: reach for a component only where Streamlit genuinely
+can't express the thing, and hand it as little judgement as possible.
 
 **Interaction.** Squares are **draggable** anywhere on the canvas and stay
 where they're put. Hovering one shows a **`+`**; dragging that onto a square
@@ -217,8 +240,11 @@ actually reads — **open buys, open sells, net**. The bought/sold totals were
 removed as noise. An earlier version put the filters in a popover to save a
 few more pixels and they were simply never found; a filter you have to go
 looking for isn't a filter, so they're back on the surface with collapsed
-labels. Squares are 150×46 px and the board **measures the viewport and
-fills what's left of the window** rather than taking a fixed height.
+labels. Squares are 150×46 px and the board **takes the page's full width and
+sizes its height to the day**: the busier side's stack of squares, plus two
+squares' worth of clear space above the market-chip rail so the links
+running down into the chips stay readable. A three-trade day gets a
+three-trade canvas rather than a screenful of empty grey.
 
 **Navigation** is a single button in a shared header (`ui/nav.py`), on both
 pages, pointing at the other one. Streamlit's own page list lives in the
@@ -322,15 +348,67 @@ because a physical buy needs the seller's generation wheeled *into* SPP (an
 export/short at the GCA), and a physical sale needs power wheeled *out of*
 SPP into the buyer's load (an import/long at the LCA).
 
-**The workflow, as specified:** click the chip → one line per counterparty,
-its 24-hour SWPW position already aggregated (every link touching that
-counterparty and that market, summed) → the trader types the GCA (short) or
-LCA (long) to bid at and a price, and can **+ Split** a counterparty across
-more than one code, editing each split's own hour-by-hour MW → **Generate
-Bid File** writes the `.xlsm`. A split's hours are validated live: every
-active split needs a code and a price, and across a counterparty's splits,
-every hour must add back up to exactly what the aggregate schedule carries
-— nothing invented, nothing dropped.
+**The workflow, as specified:** click the chip → one bid line per
+counterparty, its 24-hour SWPW position already aggregated (every link
+touching that counterparty and that market, summed) → the trader types the
+GCA (short) or LCA (long) to bid at and, if the price isn't the usual one,
+a price → **Generate Bid File** writes the `.xlsm`.
+
+**The builder is laid out like the file it writes**, on the desk's own
+request: both sides side by side in one window, hours down the index, and a
+three-level header — counterparty, then the GCA/LCA to bid it at, then its
+MW and Price columns — the workbook's own shape, down to the blue/tan SHORT
+and LONG banners. Columns are exactly as wide as the numbers in them, and
+the modal is sized to the grid rather than to one of `st.dialog`'s three
+fixed widths (`ui.scheduling.bidgrid.dialog_width_px`).
+
+**It is a custom component** (`components/bid_grid`), for the same reason
+the board is: plain Streamlit can't produce it. `st.data_editor` *flattens*
+a pandas MultiIndex into single-level column names
+(`streamlit/elements/widgets/data_editor.py::_fix_column_headers`), so a
+grouped header is out of reach, and a `+` button inside a header cell is not
+somewhere any Streamlit widget can go. Same shape as `trade_board`: one
+static `index.html`, no npm build step.
+
+Cells are blank rather than zero where a position doesn't flow — the file
+leaves those hours empty too — and **a price shows only on the hours that
+carry MW**, because a price against an empty hour is a number the file would
+never contain. A price is per bid line, not per hour (that's what reaches
+the file), so typing it into any cell of a column sets it for the day; a new
+line starts at 0 for a short and 50 for a long
+(`domain.bidfiles.DEFAULT_PRICE`), the values the desk asked for. A typed
+GCA/LCA is upper-cased on the way out, so what the cell shows is what the
+file gets.
+
+Beside each hour is a read-only **EPT** column showing where that hour
+lands in the file. The board, the trades, and this grid are all Pacific
+while the sheet is Eastern, and a trader reconciling the two shouldn't have
+to do that arithmetic in their head — including the `1*`/`2*`/`3*` rows (see
+the timezone note below).
+
+**The `+` on a GCA/LCA cell** adds a second column pair for a counterparty
+needing more than one code (and a `×` on that pair takes it back, returning
+its MW to the first). The new MW column starts empty, and **typing into it
+moves MW off the counterparty's other columns rather than adding to them**
+(`domain.bidfiles.rebalance_hour`): a split changes *how* a position is bid,
+never *how much*, so only one side of it is ever typed. The residual spreads
+in proportion to what the other lines already carry — with two lines, the
+common case, the first simply gives way. An entry larger than the day's own
+MW is deliberately *not* trimmed back: the other lines go to zero, the hour
+is tinted where it happened, and the validation says so — rather than
+silently rewriting a number that was just typed. That validation is
+unchanged: every active split needs a code and a price, and every hour must
+add back up to exactly what the aggregate schedule carries — nothing
+invented, nothing dropped.
+
+Two things worth keeping about how it's wired. **The rebalancing stays in
+Python**: the component reports the one cell that changed and redraws what
+it's handed, so the rule lives once, in the tested place, at the cost of a
+round trip per edit. And **that round trip has to be invisible** — the grid
+patches cell values in place while the column structure is unchanged, never
+touching the cell the caret is in (its warning tint, yes; its value, no),
+and rebuilds only when a split or a new counterparty actually changes the
+columns.
 
 **The format was reverse-engineered from the desk's own files**, not from a
 spec — every file under `Z:\Bids\BID Positionnement SPP\BID Bilateral SPP`

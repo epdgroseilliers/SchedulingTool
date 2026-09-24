@@ -532,6 +532,44 @@ class TestRequiredFields:
         assert not r.ok
 
 
+class TestSpecifiedSourceShorthand:
+    """SS marks a trade as having a specified source without naming it, so
+    which one it means is a property of the counterparty — Seattle City
+    Light's is Boundary. ACS is the same idea for an Asset Controlling
+    Supplier, and the two give different answers for the same counterparty.
+    """
+
+    def test_ss_from_scl_is_boundary(self):
+        r = parse("SCL sells 25mw hl at midc for midc+1 SS")
+        assert r.ok, r.errors
+        assert r.get("counterparty") == "SCLM"
+        assert r.get("specified_source") == "Boundary Dam Hydro"
+
+    def test_it_reads_the_same_in_lower_case(self):
+        r = parse("scl sells 25mw hl at midc for midc+1 ss")
+        assert r.get("specified_source") == "Boundary Dam Hydro"
+
+    def test_acs_from_the_same_counterparty_is_a_different_source(self):
+        r = parse("SCL sells 25mw hl at midc for midc+1 ACS")
+        assert r.get("specified_source") == "Seattle City Light - ACS"
+
+    def test_scl_resolves_without_falling_back_to_a_fuzzy_match(self):
+        r = parse("SCL sells 25mw hl at midc for midc+1")
+        assert r.fields["counterparty"].confidence != "fuzzy"
+
+    def test_an_unmapped_counterparty_warns_and_still_parses(self):
+        # Unlike ACS, "SS" claims nothing about which plant, so there is
+        # nothing to get wrong by leaving it for the trader to pick.
+        r = parse("BPA sells 100MW LL at midc for midc-3 SS")
+        assert r.ok, r.errors
+        assert r.get("specified_source") is None
+        assert any("SS" in w and "BPAT" in w for w in r.warnings)
+
+    def test_ss_is_not_mistaken_for_leftover_text(self):
+        r = parse("SCL sells 25mw hl at midc for midc+1 SS")
+        assert not any("Ignored" in w for w in r.warnings)
+
+
 # --- Fuzzy matching: resolved, but flagged, never silent -------------------
 
 def test_fuzzy_match_resolves_but_is_flagged():

@@ -22,6 +22,12 @@ from domain.matching import BUY, SELL, market_leg_key
 
 SHORT, LONG = "SHORT", "LONG"
 
+#: What a fresh bid line's price starts at, per side. Asked for by the desk
+#: rather than derived from anything — a short opens at 0, a long at 50 —
+#: and overwritable per line in the builder; this only saves typing the
+#: usual case.
+DEFAULT_PRICE = {SHORT: 0.0, LONG: 50.0}
+
 #: The app works in PPT throughout (domain.options.TIME_ZONE), but the bid
 #: file's hour column is labeled "HE EPT" — Eastern. Both are US zones on
 #: the same DST schedule, so the offset is a constant 3 hours all year and
@@ -91,6 +97,81 @@ def is_active(mw_by_hour):
     return any(mw for mw in (mw_by_hour or {}).values())
 
 
+def blank_line(side, mw_by_hour=None):
+    """A bid line with nothing filled in but the side's default price."""
+    return {
+        "code": "",
+        "price": DEFAULT_PRICE[side],
+        "mw_by_hour": dict(mw_by_hour or {}),
+    }
+
+
+def rebalance_hour(values, edited_index, value, total):
+    """One hour's MW across a counterparty's split lines, after the trader
+    typed `value` into line `edited_index`.
+
+    `values` is what each line carries for that hour now; the return is the
+    same list with the edit applied and the *other* lines absorbing the
+    difference, so the hour still totals `total` — what the underlying
+    trades actually call for. That's the whole point of a split: it changes
+    *how* a position is bid, never *how much*, so a trader should only ever
+    have to type one side of it.
+
+    The residual spreads across the other lines in proportion to what they
+    already carry (with two lines — the common case — that just means the
+    other one takes the rest), and lands entirely on the first of them when
+    they're all still empty, which is the state a fresh "+ Split" leaves.
+
+    An entry larger than the day's own MW is *not* trimmed back: the other
+    lines go to zero and `validate_split` reports the overrun, rather than
+    silently rewriting a number the trader just typed.
+    """
+    out = [max(0.0, float(v or 0.0)) for v in values]
+    out[edited_index] = max(0.0, float(value or 0.0))
+    others = [i for i in range(len(out)) if i != edited_index]
+    if not others:
+        return out
+
+    residual = round(float(total) - out[edited_index], 4)
+    if residual <= 0:
+        for i in others:
+            out[i] = 0.0
+        return out
+
+    carried = sum(out[i] for i in others)
+    if carried <= 0:
+        out[others[0]] = residual
+        return out
+    for i in others:
+        out[i] = round(out[i] * residual / carried, 4)
+    # Any rounding remainder goes on the last line so the hour still adds
+    # up exactly, rather than leaving a 0.0001 that reads as a real error.
+    out[others[-1]] = round(out[others[-1]] + residual - sum(out[i] for i in others), 4)
+    return out
+
+
+def split_mismatches(group_mw_by_hour, lines):
+    """{hour: (allocated, expected)} for every hour a counterparty's active
+    splits don't add back up to the schedule underneath them.
+
+    Separate from `validate_split` so the same arithmetic can be shown
+    *where* it went wrong — the grid tints those hours — as well as said in
+    words underneath.
+    """
+    active = [ln for ln in lines if is_active(ln.get("mw_by_hour"))]
+    if not active:
+        return {}
+
+    bad = {}
+    all_hours = set(group_mw_by_hour) | {h for ln in active for h in ln["mw_by_hour"]}
+    for h in sorted(all_hours):
+        allocated = sum(ln["mw_by_hour"].get(h, 0.0) for ln in active)
+        expected = group_mw_by_hour.get(h, 0.0)
+        if abs(allocated - expected) > 0.01:
+            bad[h] = (allocated, expected)
+    return bad
+
+
 def validate_split(side, pse, group_mw_by_hour, lines):
     """Errors for one counterparty's split, or [] if it's ready to bid.
 
@@ -111,15 +192,11 @@ def validate_split(side, pse, group_mw_by_hour, lines):
         if ln.get("price") is None:
             errors.append(f"{pse} ({side}): every split needs a price.")
 
-    all_hours = set(group_mw_by_hour) | {h for ln in active for h in ln["mw_by_hour"]}
-    for h in sorted(all_hours):
-        total = sum(ln["mw_by_hour"].get(h, 0.0) for ln in active)
-        expected = group_mw_by_hour.get(h, 0.0)
-        if abs(total - expected) > 0.01:
-            errors.append(
-                f"{pse} ({side}) HE{h}: splits total {total:g} MW, the "
-                f"schedule calls for {expected:g} MW."
-            )
+    for h, (allocated, expected) in split_mismatches(group_mw_by_hour, lines).items():
+        errors.append(
+            f"{pse} ({side}) HE{h}: splits total {allocated:g} MW, the "
+            f"schedule calls for {expected:g} MW."
+        )
     return errors
 
 

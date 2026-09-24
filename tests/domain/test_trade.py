@@ -1,13 +1,15 @@
 """domain.trade — pure trade-level rules: formatting, the DAM/RT date
 default, and the DB-input validation ported from the legacy macro."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from domain.trade import (
     backoffice_summary,
     db_input_errors,
     db_input_warnings,
     default_block_start,
+    default_flow_window,
+    has_trading_session,
     format_price,
     rare_fields_set,
 )
@@ -51,6 +53,82 @@ class TestDefaultBlockStart:
     def test_real_time_is_trade_date(self):
         d = date(2026, 9, 15)
         assert default_block_start(d, False) == d
+
+
+class TestDefaultFlowWindow:
+    """The flow dates a fresh block defaults to, read from the WECC
+    calendar's own pairing of trading sessions to flow dates rather than
+    inferred. Every case below is a real September 2026 session — the
+    desk reported each one.
+    """
+
+    #: What PhysiqueWest.dbo.WECC_PowerCalendar_Detailed actually holds for
+    #: that week: weekdays only, a Thursday covering two days.
+    SESSIONS = {
+        date(2026, 9, 21): [date(2026, 9, 22)],
+        date(2026, 9, 22): [date(2026, 9, 23)],
+        date(2026, 9, 23): [date(2026, 9, 24)],
+        date(2026, 9, 24): [date(2026, 9, 25), date(2026, 9, 26)],
+        date(2026, 9, 25): [date(2026, 9, 27), date(2026, 9, 28)],
+        date(2026, 9, 28): [date(2026, 9, 29)],
+    }
+
+    def test_a_one_day_session_starts_and_ends_next_day(self):
+        # The bug this replaced extended these to the following Saturday,
+        # by following a run of matching peak status instead of asking.
+        for trade_date in (date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23)):
+            assert default_flow_window(trade_date, True, self.SESSIONS) == (
+                trade_date + timedelta(days=1),
+                trade_date + timedelta(days=1),
+            )
+
+    def test_a_session_covering_two_days_gives_both(self):
+        assert default_flow_window(date(2026, 9, 24), True, self.SESSIONS) == (
+            date(2026, 9, 25),
+            date(2026, 9, 26),
+        )
+
+    def test_a_session_can_skip_a_day_the_previous_one_already_covered(self):
+        # Friday 9/25 covers 9/27-9/28; 9/26 was already sold on Thursday.
+        assert default_flow_window(date(2026, 9, 25), True, self.SESSIONS) == (
+            date(2026, 9, 27),
+            date(2026, 9, 28),
+        )
+
+    def test_a_day_with_no_session_is_a_real_time_trade(self):
+        # Saturday: there is no day-ahead market to trade it in, so it
+        # flows the day it's traded whatever the IsDAM box says — and
+        # ui.trade_fields unticks the box to match.
+        assert default_flow_window(date(2026, 9, 26), True, self.SESSIONS) == (
+            date(2026, 9, 26),
+            date(2026, 9, 26),
+        )
+
+    def test_an_empty_calendar_falls_back_to_next_day(self):
+        # What an unreachable calendar leaves: the old plain default,
+        # rather than a blocked page.
+        assert default_flow_window(date(2026, 9, 21), True, {}) == (
+            date(2026, 9, 22),
+            date(2026, 9, 22),
+        )
+
+    def test_a_session_less_day_offers_no_day_ahead_at_all(self):
+        assert has_trading_session(date(2026, 9, 24), self.SESSIONS)
+        assert not has_trading_session(date(2026, 9, 26), self.SESSIONS)
+
+    def test_an_unreadable_calendar_leaves_the_choice_alone(self):
+        # Empty means "couldn't be read", not "nothing trades" — turning a
+        # day-ahead trade real-time on a DB hiccup would be worse than
+        # leaving the trader to decide.
+        assert has_trading_session(date(2026, 9, 26), {})
+
+    def test_a_real_time_trade_flows_the_day_it_is_traded(self):
+        # And never consults the calendar at all.
+        for trade_date in (date(2026, 9, 24), date(2026, 9, 26)):
+            assert default_flow_window(trade_date, False, self.SESSIONS) == (
+                trade_date,
+                trade_date,
+            )
 
 
 class TestDbInputErrors:

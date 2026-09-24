@@ -16,6 +16,8 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import data.bidfiles.swpw as swpw
+from domain.bidfiles import LONG, SHORT
+from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG
 
 PAGE_PATH = str(Path(__file__).resolve().parents[2] / "pages" / "1_Scheduling_View.py")
 FLOW = date.today() + timedelta(days=1)
@@ -53,6 +55,7 @@ def hourly_trade(direction, counterparty, location, hours, mw, flow_date=FLOW):
 
 
 BUY_LEG = hourly_trade("Buy", "AZPS", "PALOVERDE500", range(7, 23), 100)
+SELL_LEG = hourly_trade("Sell", "BPAT", "MIDC", range(7, 23), 60)
 
 
 def _run(trades=()):
@@ -69,8 +72,22 @@ def _emit(at, event, seq=None):
 
 
 def _click(at, label):
-    [b for b in at.button if b.label == label][0].click().run()
+    [b for b in _in_dialog(at).button if b.label == label][0].click().run()
     return at
+
+def _in_dialog(at):
+    """Tell the page its modal is still open.
+
+    A real click inside a dialog reruns the *fragment*; AppTest only does
+    full script runs, and a full run with a dialog still flagged open is
+    exactly what a dismissal looks like to
+    ui.scheduling.state.dialog_was_dismissed. Without this, every step taken
+    inside a modal here would read as "the trader pressed Esc".
+    """
+    at.session_state[BIDFILE_DIALOG] = False
+    at.session_state[LINK_DIALOG] = False
+    return at
+
 
 
 def _link_to_swpw(at, frm="session:0", market="SWPW"):
@@ -78,10 +95,28 @@ def _link_to_swpw(at, frm="session:0", market="SWPW"):
     return _click(at, "Create link")
 
 
-def _fill_line(at, market, side, pse, code, price, index=0):
-    at.text_input(key=f"mv_bf_code_{market}_{side}_{pse}_{index}").set_value(code).run()
-    at.number_input(key=f"mv_bf_price_{market}_{side}_{pse}_{index}").set_value(price).run()
-    return at
+def _grid(at, event):
+    """One bid-grid event, exactly as the component sends it — the code and
+    the numbers all live in the grid now."""
+    event = dict(event)
+    event.setdefault("instance", "test-frame")
+    event["seq"] = at.session_state["mv_bidgrid_last_seq"] + 1
+    at.session_state["mv_bidgrid"] = event
+    return _in_dialog(at).run()
+
+
+def _fill_code(at, side, pse, code, line=0):
+    """Type a GCA/LCA, leaving the price at the side's default."""
+    return _grid(at, {"type": "code", "side": side, "pse": pse, "line": line, "value": code})
+
+
+def _fill_line(at, side, pse, code, price, line=0):
+    at = _fill_code(at, side, pse, code, line)
+    return _grid(at, {"type": "price", "side": side, "pse": pse, "line": line, "value": price})
+
+
+def _lines(at, side=SHORT, pse="AZPS", market="SWPW"):
+    return at.session_state["mv_bidfile_splits"][(market, side, pse)]
 
 
 class TestOpeningThePopup:
@@ -90,7 +125,7 @@ class TestOpeningThePopup:
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
         assert not at.exception, [e.value for e in at.exception]
         assert at.session_state["mv_bidfile_market"] == "SWPW"
-        assert [t.key for t in at.text_input] == ["mv_bf_code_SWPW_SHORT_AZPS_0"]
+        assert list(_lines(at)[0]["mw_by_hour"].values()) == [100.0] * 16
 
     def test_clicking_an_unsupported_market_says_so_instead_of_nothing(self, no_bilateral_db):
         at = _emit(
@@ -126,13 +161,46 @@ class TestOpeningThePopup:
         assert at.session_state["mv_pending"] is None
 
 
+class TestDismissingIt:
+    """st.dialog gives no callback when a modal is closed with x, Esc or a
+    click outside, so the state saying "this is open" used to survive it —
+    and the next page run put the dialog straight back. Reported as
+    "clicking Refresh systematically opens the SWPW popup", and reproduced
+    in a browser exactly that way."""
+
+    def test_a_page_run_with_nothing_touched_closes_it(self, no_bilateral_db):
+        at = _link_to_swpw(_run([BUY_LEG]))
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        assert at.session_state["mv_bidfile_market"] == "SWPW"
+
+        at.run()  # what a dismissal leaves behind: a page run, nothing touched
+        assert at.session_state["mv_bidfile_market"] is None
+
+    def test_so_refreshing_afterwards_does_not_bring_it_back(self, no_bilateral_db):
+        at = _link_to_swpw(_run([BUY_LEG]))
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        at.run()                       # dismissed
+        _click(at, "↻")              # Refresh
+        assert at.session_state["mv_bidfile_market"] is None
+        assert not at.exception, [e.value for e in at.exception]
+
+    def test_working_inside_it_keeps_it_open(self, no_bilateral_db):
+        # The other half of the guard: a rerun the dialog asked for itself
+        # must not read as a dismissal.
+        at = _link_to_swpw(_run([BUY_LEG]))
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        at = _fill_code(at, SHORT, "AZPS", "PALOVERDE")
+        assert at.session_state["mv_bidfile_market"] == "SWPW"
+        assert _lines(at)[0]["code"] == "PALOVERDE"
+
+
 class TestGenerating:
     def test_filling_in_the_one_line_and_generating_writes_a_real_file(
         self, no_bilateral_db, redirect_swpw
     ):
         at = _link_to_swpw(_run([BUY_LEG]))
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
-        at = _fill_line(at, "SWPW", "SHORT", "AZPS", "AZPS", -1.0)
+        at = _fill_line(at, SHORT, "AZPS", "AZPS", -1.0)
         _click(at, "Generate Bid File")
 
         assert not at.exception, [e.value for e in at.exception]
@@ -156,6 +224,25 @@ class TestGenerating:
         # openpyxl always reads a date cell back as datetime.
         assert ws["C5"].value == datetime(FLOW.year, FLOW.month, FLOW.day)
 
+    def test_untouched_prices_go_out_at_the_side_s_default(
+        self, no_bilateral_db, redirect_swpw
+    ):
+        at = _link_to_swpw(_run([BUY_LEG, SELL_LEG]))
+        at = _link_to_swpw(at, frm="session:1")
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        at = _fill_code(at, SHORT, "AZPS", "AZPS")
+        at = _fill_code(at, LONG, "BPAT", "MIDC")
+        _click(at, "Generate Bid File")
+
+        assert not at.exception, [e.value for e in at.exception]
+        ws = openpyxl.load_workbook(redirect_swpw / "test-output.xlsm")["BIDS"]
+        # Shorts first from column D, then longs: MW/Price, MW/Price.
+        assert ws["D5"].value == "SPP-SHORT(AZPS)"
+        assert ws["F5"].value == "SPP-LONG(MIDC)"
+        row = swpw.ppt_hour_row(7)
+        assert ws.cell(row=row, column=5).value == 0.0   # a short opens at 0
+        assert ws.cell(row=row, column=7).value == 50.0  # a long at 50
+
     def test_generating_without_a_code_blocks_and_writes_nothing(
         self, no_bilateral_db, redirect_swpw
     ):
@@ -168,29 +255,70 @@ class TestGenerating:
     def test_a_second_generate_asks_before_overwriting(self, no_bilateral_db, redirect_swpw):
         at = _link_to_swpw(_run([BUY_LEG]))
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
-        at = _fill_line(at, "SWPW", "SHORT", "AZPS", "AZPS", -1.0)
+        at = _fill_line(at, SHORT, "AZPS", "AZPS", -1.0)
         _click(at, "Generate Bid File")
         _click(at, "Generate Bid File")
 
         assert any("already exists" in w.value for w in at.warning)
         assert not [b for b in at.button if b.label == "Overwrite and Generate"]
 
-        at.checkbox(key="mv_bidfile_overwrite_confirm").set_value(True).run()
+        _in_dialog(at).checkbox(key="mv_bidfile_overwrite_confirm").set_value(True).run()
         assert [b for b in at.button if b.label == "Overwrite and Generate"]
         _click(at, "Overwrite and Generate")
         assert not at.exception, [e.value for e in at.exception]
         assert any("Bid file written" in s.value for s in at.success)
 
 
-class TestSplitting:
-    def test_the_split_button_adds_a_second_editable_line(self, no_bilateral_db):
+class TestWhatTheGridPutsInTheFile:
+    """The grid's own behaviour is covered in test_bidgrid.py; this is the
+    part that matters here — an edit made in it reaching the workbook."""
+
+    def test_a_price_typed_into_the_grid_reaches_every_hour_it_flows(
+        self, no_bilateral_db, redirect_swpw
+    ):
         at = _link_to_swpw(_run([BUY_LEG]))
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
-        _click(at, "+ Split")
-        assert [t.key for t in at.text_input] == [
-            "mv_bf_code_SWPW_SHORT_AZPS_0",
-            "mv_bf_code_SWPW_SHORT_AZPS_1",
-        ]
+        at = _fill_line(at, SHORT, "AZPS", "AZPS", -1.0)
+        _click(at, "Generate Bid File")
+
+        assert not at.exception, [e.value for e in at.exception]
+        ws = openpyxl.load_workbook(redirect_swpw / "test-output.xlsm")["BIDS"]
+        # One price per bid line, so it lands on every hour the position
+        # flows — and on none of the ones it doesn't.
+        assert ws.cell(row=swpw.ppt_hour_row(7), column=5).value == -1.0
+        assert ws.cell(row=swpw.ppt_hour_row(22), column=5).value == -1.0
+        assert ws.cell(row=swpw.ppt_hour_row(1), column=5).value is None
+
+    def test_a_split_typed_into_the_grid_becomes_two_columns(
+        self, no_bilateral_db, redirect_swpw
+    ):
+        at = _link_to_swpw(_run([BUY_LEG]))
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        at = _grid(at, {"type": "split", "side": SHORT, "pse": "AZPS", "line": 0})
+        for hour in range(7, 23):
+            at = _grid(at, {"type": "mw", "side": SHORT, "pse": "AZPS", "line": 1,
+                            "hour": hour, "value": 40.0})
+        at = _fill_code(at, SHORT, "AZPS", "AZPS", line=0)
+        at = _fill_code(at, SHORT, "AZPS", "TEPC", line=1)
+        assert not at.error  # it reconciles: 60 + 40 is the 100 that traded
+        _click(at, "Generate Bid File")
+
+        assert not at.exception, [e.value for e in at.exception]
+        ws = openpyxl.load_workbook(redirect_swpw / "test-output.xlsm")["BIDS"]
+        assert ws["D5"].value == "SPP-SHORT(AZPS)"
+        assert ws["F5"].value == "SPP-SHORT(TEPC)"
+        assert ws.cell(row=swpw.ppt_hour_row(7), column=4).value == 60.0
+        assert ws.cell(row=swpw.ppt_hour_row(7), column=6).value == 40.0
+
+
+class TestSplitting:
+    def test_the_plus_on_a_code_adds_a_second_empty_line(self, no_bilateral_db):
+        at = _link_to_swpw(_run([BUY_LEG]))
+        at = _emit(at, {"type": "chip_click", "market": "SWPW"})
+        at = _grid(at, {"type": "split", "side": SHORT, "pse": "AZPS", "line": 0})
+        lines = _lines(at)
+        assert len(lines) == 2
+        assert lines[1]["mw_by_hour"] == {}
 
     def test_a_reconciled_split_generates_two_columns(self, no_bilateral_db, redirect_swpw):
         at = _link_to_swpw(_run([BUY_LEG]))
@@ -237,7 +365,7 @@ class TestScopeAcrossFiltersAndHiding:
         at.multiselect(key="mv_pse").set_value(["NOBODY"]).run()
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
         assert not at.exception, [e.value for e in at.exception]
-        assert [t.key for t in at.text_input] == ["mv_bf_code_SWPW_SHORT_AZPS_0"]
+        assert list(_lines(at)[0]["mw_by_hour"].values()) == [100.0] * 16
 
     def test_the_bidfile_sees_a_position_even_when_its_square_is_hidden(
         self, no_bilateral_db, redirect_swpw
@@ -246,4 +374,4 @@ class TestScopeAcrossFiltersAndHiding:
         at = _emit(at, {"type": "dismiss", "key": "session:0"})
         at = _emit(at, {"type": "chip_click", "market": "SWPW"})
         assert not at.exception, [e.value for e in at.exception]
-        assert [t.key for t in at.text_input] == ["mv_bf_code_SWPW_SHORT_AZPS_0"]
+        assert list(_lines(at)[0]["mw_by_hour"].values()) == [100.0] * 16

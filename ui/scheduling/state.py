@@ -29,6 +29,35 @@ SOURCE_DB = "Database"
 SOURCE_SESSION = "This session"
 ALL_SOURCES = [SOURCE_DB, SOURCE_SESSION]
 
+#: "This dialog has already been drawn on a page run" — one key per modal.
+BIDFILE_DIALOG = "mv_bidfile_shown"
+LINK_DIALOG = "mv_popup_shown"
+
+
+def arm_dialog(key):
+    """Ask for the dialog behind `key` to be drawn on the next page run:
+    on opening it, and before any rerun deliberately made from inside it."""
+    st.session_state[key] = False
+
+
+def dialog_was_dismissed(key):
+    """Whether an open modal was closed with ✕, Esc or a click outside —
+    the one thing `st.dialog` gives no callback for.
+
+    A modal covers the page while it's open, so a *full script run* can only
+    mean one of two things: the trader closed it, or the dialog itself asked
+    for that rerun — and those re-arm first (`arm_dialog`). So a second page
+    run with the dialog still flagged open is a dismissal.
+
+    Without this the flag simply survived being dismissed, and the next page
+    run silently re-opened a modal nobody asked for. Reproduced exactly that
+    way: open the SWPW builder, press Esc, click Refresh, and it's back.
+    """
+    if st.session_state.get(key):
+        return True
+    st.session_state[key] = True
+    return False
+
 
 def init_matching_state():
     """Seed every key the view reads before it's written. Safe on every
@@ -77,6 +106,20 @@ def init_matching_state():
     # into some other market's builder later.
     if "mv_bidfile_splits" not in st.session_state:
         st.session_state.mv_bidfile_splits = {}
+    # The bid grid's own event watermark. Its own keys rather than the
+    # board's, because the board is still on the page behind the builder's
+    # dialog, counting separately — see ui.scheduling.bidgrid.handle_event.
+    if "mv_bidgrid_last_seq" not in st.session_state:
+        st.session_state.mv_bidgrid_last_seq = 0
+    if "mv_bidgrid_instance" not in st.session_state:
+        st.session_state.mv_bidgrid_instance = None
+    # Whether each dialog has already been drawn on a page run — see
+    # dialog_was_dismissed, which is the only way to notice a modal closed
+    # with ✕, Esc or a click outside.
+    if BIDFILE_DIALOG not in st.session_state:
+        st.session_state[BIDFILE_DIALOG] = False
+    if LINK_DIALOG not in st.session_state:
+        st.session_state[LINK_DIALOG] = False
 
 
 def flow_date_is_peak(flow_date):
@@ -221,6 +264,7 @@ def start_link(buy_key, sell_key):
     st.session_state.mv_pending = {"buy_key": buy_key, "sell_key": sell_key}
     st.session_state.mv_editing = None
     st.session_state.mv_bidfile_market = None  # only one dialog at a time
+    arm_dialog(LINK_DIALOG)
 
 
 def start_link_edit(link_id):
@@ -229,6 +273,7 @@ def start_link_edit(link_id):
     st.session_state.mv_editing = link_id
     st.session_state.mv_pending = None
     st.session_state.mv_bidfile_market = None  # only one dialog at a time
+    arm_dialog(LINK_DIALOG)
 
 
 def close_popup():
@@ -321,6 +366,7 @@ def find_link(link_id):
 def open_bidfile(market):
     st.session_state.mv_bidfile_market = market
     close_popup()  # only one dialog at a time
+    arm_dialog(BIDFILE_DIALOG)
 
 
 def close_bidfile():
@@ -353,6 +399,9 @@ def bidfile_splits_for(market):
 
 __all__ = [
     "ALL_SOURCES",
+    "BIDFILE_DIALOG",
+    "LINK_DIALOG",
+    "arm_dialog",
     "SOURCE_DB",
     "SOURCE_SESSION",
     "bidfile_market",
@@ -360,6 +409,7 @@ __all__ = [
     "bidfile_splits_for",
     "close_bidfile",
     "close_popup",
+    "dialog_was_dismissed",
     "commit_link",
     "find_link",
     "flow_date_is_peak",

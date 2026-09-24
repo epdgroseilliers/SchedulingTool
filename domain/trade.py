@@ -20,11 +20,66 @@ def rare_fields_set(values):
 
 
 def default_block_start(trade_date, is_dam):
-    """A block's default Start Date: the next day for a DAM trade
-    (day-ahead delivery always targets the next WECC calendar day), or the
-    trade date itself for a real-time trade.
+    """A block's default Start Date when the WECC calendar has nothing to
+    say: the next day for a DAM trade, or the trade date itself for a
+    real-time one.
+
+    The calendar normally decides — see default_flow_window, which only
+    falls back to this when it can't be reached or has no session covering
+    the trade date at all.
     """
     return trade_date + timedelta(days=1) if is_dam else trade_date
+
+
+def default_flow_window(trade_date, is_dam, sessions):
+    """(start, end) a fresh block defaults to, from the WECC calendar's own
+    pairing of trading sessions to flow dates.
+
+    `sessions` is {trade date: [flow date, ...]} — see
+    data.calendar.sessions_near. One session covers one or more flow dates
+    and the calendar says which, so the range is read from it rather than
+    inferred: guessing it from runs of matching peak/off-peak days put a
+    Monday trade's end date on the following Saturday.
+
+    Three cases:
+
+    - **A real-time trade** flows the day it's traded, and doesn't consult
+      the calendar at all.
+    - **A trading day** takes its session's flow dates, first to last.
+    - **A day with no session** (a weekend, a holiday) has no day-ahead
+      market to trade in at all, so whatever the IsDAM box says, the trade
+      is real-time and flows that same day. `ui.trade_fields` unticks the
+      box to match — see has_trading_session.
+
+    An empty `sessions` is the one ambiguous case: the calendar couldn't be
+    read, which says nothing about whether the market trades that day. That
+    falls back to the plain next-day default rather than quietly turning a
+    day-ahead trade into a real-time one.
+    """
+    if not is_dam:
+        return trade_date, trade_date
+
+    flows = sessions.get(trade_date)
+    if flows:
+        return min(flows), max(flows)
+
+    if sessions:
+        return trade_date, trade_date
+
+    start = default_block_start(trade_date, is_dam)
+    return start, start
+
+
+def has_trading_session(trade_date, sessions):
+    """Whether the WECC calendar has a day-ahead session on this date — ie.
+    whether a DAM trade can exist for it at all.
+
+    An empty `sessions` means the calendar couldn't be read, not that
+    nothing trades, so that answers True: the trader keeps the choice.
+    """
+    if not sessions:
+        return True
+    return bool(sessions.get(trade_date))
 
 
 def db_input_errors(trade, rows, past_dated, past_confirmed):

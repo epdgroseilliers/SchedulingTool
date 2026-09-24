@@ -32,7 +32,7 @@ const dom = new JSDOM(HTML, {
     Object.defineProperty(win.HTMLElement.prototype, "clientWidth", { get() { return 1200; }, configurable: true });
     Object.defineProperty(win.HTMLElement.prototype, "clientHeight", { get() { return 520; }, configurable: true });
     win.HTMLElement.prototype.getBoundingClientRect = function () {
-      return { left: 0, top: 0, right: 1200, bottom: 520, width: 1200, height: 520 };
+      return { left: 0, top: 0, right: 1200, bottom: 520, width: 1200, height: 240 };
     };
     if (!win.CSS) win.CSS = {};
     win.CSS.escape = (s) => String(s).replace(/[^\w-]/g, (c) => "\\" + c);
@@ -75,7 +75,7 @@ const markets = [{ name: "CAISO", mwh: "" }, { name: "SWPW", mwh: "1,600" }, { n
 const links = [{ link_id: "L1", buy_key: "db:1", sell_key: "db:2", buy_market: null, sell_market: null, mwh: 960, label: "L1", related: true }];
 
 // --- first render -----------------------------------------------------
-render({ squares, links, markets, positions: {}, selected: null, revision: 1, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 1, height: 240 });
 
 const doc = win.document;
 const board = doc.getElementById("board");
@@ -153,7 +153,7 @@ check("clicking a wire emits link_click", v && v.type === "link_click" && v.link
 // Python marks it related:false.
 const focusedSquares = squares.map((s) => ({ ...s, related: s.key !== "db:3" }));
 const moved = pos("db:1");
-render({ squares: focusedSquares, links, markets, positions: { "db:1": moved }, selected: "db:1", revision: 2, height: 520 });
+render({ squares: focusedSquares, links, markets, positions: { "db:1": moved }, selected: "db:1", revision: 2, height: 240 });
 check("a rebuild honours stored positions", Math.abs(pos("db:1")[0] - moved[0]) < 1, [pos("db:1"), moved]);
 check("unrelated squares dim around the focus", doc.querySelector('[data-key="db:3"]').classList.contains("dim"));
 check("the focused square is not dimmed", !doc.querySelector('[data-key="db:1"]').classList.contains("dim"));
@@ -162,13 +162,13 @@ check("a linked square stays lit", !doc.querySelector('[data-key="db:2"]').class
 // --- same revision must NOT rebuild (or a drag snaps back) ------------
 const beforeCount = doc.querySelectorAll(".sq").length;
 doc.querySelector('[data-key="db:1"]').dataset.marker = "kept";
-render({ squares: focusedSquares, links, markets, positions: {}, selected: "db:1", revision: 2, height: 520 });
+render({ squares: focusedSquares, links, markets, positions: {}, selected: "db:1", revision: 2, height: 240 });
 check("an identical revision does not rebuild",
       doc.querySelector('[data-key="db:1"]').dataset.marker === "kept");
 check("square count unchanged", doc.querySelectorAll(".sq").length === beforeCount);
 
 // --- clearing a square off the board ----------------------------------
-render({ squares, links, markets, positions: {}, selected: null, revision: 10, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 10, height: 240 });
 pointer("pointerdown", 20, 20, doc.querySelector('[data-key="db:2"] .kill'));
 v = lastValue();
 check("the x emits dismiss", v && v.type === "dismiss" && v.key === "db:2", v);
@@ -177,13 +177,13 @@ pointer("pointerup", 20, 20);
 
 // --- a new trade lands at the bottom of its side, not on top -----------
 // db:1 and db:3 are buys; pin them to slots 0 and 1, then add a third.
-render({ squares, links, markets, positions: {}, selected: null, revision: 11, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 11, height: 240 });
 const buy1 = pos("db:1"), buy3 = pos("db:3");
 const withNew = squares.concat([
   { key: "db:4", side: "buy", name: "NEW", detail: "x · 1-24 · 240", matched_frac: 0, is_market: false, related: true, title: "new" },
 ]);
 render({ squares: withNew, links, markets,
-         positions: { "db:1": buy1, "db:3": buy3 }, selected: null, revision: 12, height: 520 });
+         positions: { "db:1": buy1, "db:3": buy3 }, selected: null, revision: 12, height: 240 });
 const newPos = pos("db:4");
 const clash = [buy1, buy3].some((p) => Math.abs(p[0] - newPos[0]) < 150 && Math.abs(p[1] - newPos[1]) < 46);
 check("a new square does not land on an existing one", !clash, { newPos, buy1, buy3 });
@@ -194,7 +194,7 @@ check("a new buy stays on the buy side", newPos[0] < 300, newPos);
 // (this is the actual feature: a chip is both a drag source for links and
 // a click target for the SWPW bid-file builder — the two have to be told
 // apart by movement, exactly like a square's click-vs-drag already is.)
-render({ squares, links, markets, positions: {}, selected: null, revision: 13, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 13, height: 240 });
 pointer("pointerdown", 600, 500, doc.querySelector('[data-market="CAISO"]'));
 check("a chip press does not start linking immediately", !board.classList.contains("linking"));
 pointer("pointerup", 600, 500);
@@ -226,7 +226,7 @@ check("chip -> chip emits nothing", lastValue().seq === beforeChip, lastValue())
 // can be left hanging. pointerup checks chipDown before linking, so a
 // stale chip press used to hijack the next link drag: it emitted
 // chip_click and swallowed the link entirely.
-render({ squares, links, markets, positions: {}, selected: null, revision: 14, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 14, height: 240 });
 pointer("pointerdown", 600, 500, doc.querySelector('[data-market="CAISO"]'));  // no pointerup: abandoned
 const beforeStale = lastValue() ? lastValue().seq : 0;
 pointer("pointerdown", 100, 100, doc.querySelector('[data-key="db:1"] .grip'));
@@ -290,13 +290,41 @@ check("the x is visible at rest", parseFloat(killStyle.opacity) > 0, killStyle.o
 
 // --- the board fills the window ---------------------------------------
 // frameElement/parent are absent in this harness, so the fallback applies.
-const heights = sent.filter((m) => m.type === "streamlit:setFrameHeight").map((m) => m.height);
-check("frame height follows the board", heights[heights.length - 1] >= 360, heights.slice(-3));
+// --- the canvas sizes itself to the day --------------------------------
+// Three buys and one sell: tall enough for three, plus two squares' worth
+// of clear space above the market rail so the links into it stay readable.
+const SQ_H = 46, GAP = 7, PAD = 20, RAIL_H = 30, CLEAR_ROWS = 2, FLOOR = 240;
+function expectedHeight(rows) {
+  const stack = rows ? rows * (SQ_H + GAP) - GAP : 0;
+  return Math.max(FLOOR, PAD + stack + CLEAR_ROWS * (SQ_H + GAP) + RAIL_H);
+}
+render({ squares, links, markets, positions: {}, selected: null, revision: 20, height: 240 });
+let heights = sent.filter((m) => m.type === "streamlit:setFrameHeight").map((m) => m.height);
+check("the canvas is sized for the busier side", heights[heights.length - 1] === expectedHeight(2) + 4,
+      [heights[heights.length - 1], expectedHeight(2) + 4]);
+
+const quiet = heights[heights.length - 1];
+const many = [];
+for (let i = 0; i < 8; i++) many.push({ ...squares[0], key: "db:m" + i });
+render({ squares: many, links: [], markets, positions: {}, selected: null, revision: 22, height: 240 });
+heights = sent.filter((m) => m.type === "streamlit:setFrameHeight").map((m) => m.height);
+check("a busy day grows instead of stacking a second column",
+      heights[heights.length - 1] === expectedHeight(8) + 4,
+      [heights[heights.length - 1], expectedHeight(8) + 4]);
+check("so a quiet day's canvas really is the shorter one",
+      quiet < heights[heights.length - 1], [quiet, heights[heights.length - 1]]);
+check("and every square is in one column", new Set(
+        many.map((sq) => doc.querySelector('[data-key="' + sq.key + '"]').style.left)).size === 1);
+
+render({ squares: [], links: [], markets, positions: {}, selected: null, revision: 23, height: 240 });
+heights = sent.filter((m) => m.type === "streamlit:setFrameHeight").map((m) => m.height);
+check("an empty board still has room to drop something into",
+      heights[heights.length - 1] === 244, heights[heights.length - 1]);
 
 // --- empty board -------------------------------------------------------
-render({ squares: [], links: [], markets, positions: {}, selected: null, revision: 3, height: 520 });
+render({ squares: [], links: [], markets, positions: {}, selected: null, revision: 3, height: 240 });
 check("empty board says so", !!doc.getElementById("empty"));
-render({ squares, links, markets, positions: {}, selected: null, revision: 4, height: 520 });
+render({ squares, links, markets, positions: {}, selected: null, revision: 4, height: 240 });
 check("empty placeholder removed on rebuild", doc.querySelectorAll("#empty").length === 0,
       doc.querySelectorAll("#empty").length);
 

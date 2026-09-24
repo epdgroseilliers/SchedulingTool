@@ -25,7 +25,7 @@ from domain.options import (
 )
 from domain.trade import rare_fields_set
 from ui.paste import render_paste_input
-from ui.session import queue_form_reset, widget_defaults
+from ui.session import queue_form_reset, trade_date_has_session, widget_defaults
 
 
 def render_entry_row():
@@ -48,12 +48,33 @@ def render_entry_row():
         "Trade Date", key="trade_date", help="Date the deal was struck.",
         **widget_defaults("trade_date", value=date.today()),
     )
+    # A trade date the WECC calendar has no session on has no day-ahead
+    # market to trade in, so the trade can only be real-time: the box goes
+    # off and stays off, rather than leaving a DAM trade that couldn't have
+    # happened. Set before the widget is created, which is the only moment
+    # Streamlit allows it.
+    dam_possible = trade_date_has_session(trade_date)
+    if not dam_possible:
+        # Only remember having done it when it was actually on: a trader
+        # who had already chosen RT keeps that choice below.
+        if st.session_state.get("is_dam", True):
+            st.session_state.is_dam = False
+            st.session_state.is_dam_forced_off = True
+    elif st.session_state.pop("is_dam_forced_off", False):
+        # Back on a trading day: give back the box we took away, rather
+        # than leaving a mistyped weekend date silently turning the next
+        # trade real-time.
+        st.session_state.is_dam = True
     is_dam = top2.checkbox(
         "IsDAM",
         key="is_dam",
+        disabled=not dam_possible,
         help="Writes DAM_RT as DAM when ticked, RT when not. Left NULL for a monthly trade. "
-        "Also sets a new block's default Start Date: the next day (day-ahead) when ticked, "
-        "the trade date (real-time) when not.",
+        "Also sets a new block's default flow dates: the WECC calendar's own session for "
+        "this trade date when ticked, the trade date itself when not."
+        + ("" if dam_possible else
+           " Unavailable: the WECC calendar has no trading session on this "
+           "trade date, so this trade is real-time."),
         **widget_defaults("is_dam", value=True),
     )
     render_paste_input(top3)

@@ -40,13 +40,14 @@ _FRONTEND = Path(__file__).parent / "frontend"
 _component = components.declare_component("mag_trade_board", path=str(_FRONTEND))
 
 
-def trade_board(squares, links, markets, positions, selected, revision, height=520, key="mv_board"):
+def trade_board(squares, links, markets, positions, selected, revision, height=240, key="mv_board"):
     """Render the board and return the last event, or None.
 
     `squares` / `links` / `markets` are plain JSON-able dicts — see
     ui.scheduling.board.build_payload for their shape. `positions` is
     {square key: [x, y]} in board pixels, which the component echoes back on
-    a move so the caller can persist it.
+    a move so the caller can persist it. `height` is a *floor*: the canvas
+    sizes itself to the day's busier side.
     """
     return _component(
         squares=squares,

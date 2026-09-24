@@ -7,9 +7,9 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-483 tests total: all but 19 run with no network dependency beyond what
-rendering the app already needs (see below); those 19 are marked `db` and
-skipped unless `--run-db` is passed. Four more need node + jsdom and skip
+546 tests total: all but 16 run with no network dependency beyond what
+rendering the app already needs (see below); those 16 are marked `db` and
+skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them.
 
 ## Layout
@@ -69,14 +69,27 @@ tests/
                               up on both sides
     test_nav.py              the shared header: a button to the other page on
                               each, and the sidebar page list suppressed
-    test_bidfile.py          the SWPW bid-file popup end to end: opening it
+    test_bidfile.py          the SWPW bid-file dialog end to end: opening it
                               from a chip click, filling in and generating,
                               the overwrite-confirm gate, splitting, and that
                               it sees a position regardless of filters/hides.
                               Every write redirected to tmp_path; never Z:\
+    test_bidgrid.py          what the bid grid component is handed
+                              (build_payload, the index column, the modal's
+                              width) and what it makes of each event
+                              (rebalancing a split, dropping one, the replay
+                              guard)
+    test_bidgrid_frontend.py runs tests/frontend/bid_grid_checks.js, and
+                              checks the Python/JS event contract — plus that
+                              the column widths Python sizes the modal by
+                              still match the component's own CSS
   frontend/
     board_checks.js         the trade board component driven in jsdom: real
                              pointer gestures against the real index.html
+    bid_grid_checks.js      the bid grid component driven in jsdom: its
+                             three-level header, the blank-vs-zero rule, and
+                             the patch-in-place that keeps the caret where
+                             the trader left it
     package.json            its one dependency (jsdom)
 ```
 
@@ -108,8 +121,12 @@ date's peak flag, like the rest of the `ui/` tier.
 
 ## Testing a custom component
 
-AppTest never renders a custom component's iframe, so the trade board is
-covered from two sides:
+AppTest never renders a custom component's iframe, so each of the two — the
+trade board and the bid grid — is covered from two sides. The board is the
+example below; the grid works exactly the same way, through `mv_bidgrid`
+events and `tests/frontend/bid_grid_checks.js`. They have separate
+`seq`/`instance` watermarks because both are live at once: the bid-file
+dialog opens over the board.
 
 - **Its events, through the real page.** A component's value lands in
   `session_state` under its key like any widget's, so
@@ -130,8 +147,14 @@ covered from two sides:
   `npm install` has been run in `tests/frontend`.
 
 Prefer moving a decision *out* of the component when you can — anything
-computed in `ui/scheduling/board.py` gets ordinary Python tests, and only
-what genuinely needs a browser has to go through jsdom.
+computed in `ui/scheduling/board.py` or `bidgrid.py` gets ordinary Python
+tests, and only what genuinely needs a browser has to go through jsdom. The
+rebalancing a typed MW causes is the clearest case: it lives in
+`domain.bidfiles`, so the grid only has to report the cell that changed.
+
+Both `_checks.js` files print `PASS`/`FAIL` per check and end with
+`ALL CHECKS PASSED`; the pytest wrappers assert on that *and* on a minimum
+number of PASS lines, so a harness that silently stops early still fails.
 
 ## Safety: nothing here writes to the compliance database
 

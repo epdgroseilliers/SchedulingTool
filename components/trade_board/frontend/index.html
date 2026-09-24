@@ -167,28 +167,24 @@ var rail  = document.getElementById("rail");
 var nodes = {};                       // key -> element
 var SQ_W = 150, SQ_H = 46, GAP = 7, PAD = 20, RAIL_H = 30;
 
-var MIN_BOARD_H = 360, BOTTOM_GAP = 26;
+//: Squares' worth of clear space kept between the lowest square and the
+//  market rail, so the links running down into the chips stay readable.
+var CLEAR_ROWS = 2;
 
-/** Fill the window from wherever the board starts down to the bottom.
+/** How tall the canvas needs to be: the busier side's stack of squares,
+ *  plus two squares' worth of clear space above the market rail.
  *
- *  Streamlit sizes a component's iframe from setFrameHeight, so a component
- *  that wants the rest of the page has to measure it: the host page's
- *  viewport, minus where this iframe begins. Both reads need the host to be
- *  same-origin, which it is when Streamlit serves the component itself — but
- *  an embedding could break that, so a failure falls back to the height
- *  Python asked for rather than collapsing the board. */
-function availableHeight(fallback) {
-  try {
-    var frame = window.frameElement;
-    var viewport = window.parent.innerHeight;
-    if (frame && viewport) {
-      var top = frame.getBoundingClientRect().top;
-      return Math.max(MIN_BOARD_H, Math.floor(viewport - top - BOTTOM_GAP));
-    }
-  } catch (e) {
-    // Cross-origin host: measuring isn't allowed, so take what we're given.
-  }
-  return Math.max(MIN_BOARD_H, fallback);
+ *  It follows the day rather than the window — a three-trade day gets a
+ *  three-trade canvas. `S.height` is the floor Python asks for, so an empty
+ *  board still has somewhere to drop something. */
+function boardHeight() {
+  var rows = 0;
+  ["buy", "sell"].forEach(function (side) {
+    var n = S.squares.filter(function (sq) { return sq.side === side; }).length;
+    if (n > rows) rows = n;
+  });
+  var stack = rows ? rows * (SQ_H + GAP) - GAP : 0;
+  return Math.max(S.height, PAD + stack + CLEAR_ROWS * (SQ_H + GAP) + RAIL_H);
 }
 
 function applyTheme(t) {
@@ -600,17 +596,21 @@ window.addEventListener("message", function (event) {
   var args = event.data.args || {};
   applyTheme(event.data.theme);
 
-  S.height = args.height || 520;
-  S.boardH = availableHeight(S.height);
-  board.style.height = S.boardH + "px";
+  S.height = args.height || 240;
 
-  if (args.revision !== S.revision) {
+  var rebuild = args.revision !== S.revision;
+  if (rebuild) {
     S.revision = args.revision;
     S.squares = args.squares || [];
     S.links = args.links || [];
     S.markets = args.markets || [];
     S.selected = args.selected || null;
     S.pos = Object.assign({}, args.positions || {});
+  }
+  // Before layoutMissing: slotsPerColumn reads it.
+  S.boardH = boardHeight();
+  board.style.height = S.boardH + "px";
+  if (rebuild) {
     layoutMissing();
     clampAll();
     build();
@@ -618,15 +618,9 @@ window.addEventListener("message", function (event) {
   setHeight(S.boardH + 4);
 });
 
-// The iframe is resized when the page is, which is the only signal we get
-// that the window changed shape — re-measure and grow or shrink with it.
+// The board's *height* follows the day, not the window — but its width is
+// the page's, so a resize still moves the sell lane and every square in it.
 window.addEventListener("resize", function () {
-  var h = availableHeight(S.height);
-  if (h !== S.boardH) {
-    S.boardH = h;
-    board.style.height = h + "px";
-    setHeight(h + 4);
-  }
   clampAll();
   paint();
 });

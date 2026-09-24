@@ -12,8 +12,8 @@ from domain.options import (
     DEFAULT_WSPP_CONTRACT,
     RARE_FIELD_DEFAULTS,
 )
-from domain.shapes import dam_default_end_date
-from domain.trade import default_block_start
+from data.calendar import sessions_near
+from domain.trade import default_flow_window, has_trading_session
 
 
 def init_session_state():
@@ -82,6 +82,33 @@ def get_version(bid):
     return st.session_state.get(version_key(bid), 0)
 
 
+def block_date_defaults(trade_date, is_dam):
+    """(start, end) a fresh block's dates default to.
+
+    The one place the WECC calendar's session-to-flow-date pairing is read
+    for this — schedule.py, paste.py and the form reset all come through
+    here so a trade date means the same range wherever it's set. An
+    unreachable calendar falls back to the plain next-day default rather
+    than blocking the page; clicking Generate still surfaces the error.
+    """
+    try:
+        sessions = sessions_near(trade_date)
+    except Exception:
+        sessions = {}
+    return default_flow_window(trade_date, is_dam, sessions)
+
+
+def trade_date_has_session(trade_date):
+    """Whether a day-ahead trade can exist for this trade date — ie. whether
+    the WECC calendar has a trading session on it. An unreachable calendar
+    answers True and leaves the choice alone."""
+    try:
+        sessions = sessions_near(trade_date)
+    except Exception:
+        sessions = {}
+    return has_trading_session(trade_date, sessions)
+
+
 def dates_last_default_keys(bid):
     return f"dates_last_default_start_{bid}", f"dates_last_default_end_{bid}"
 
@@ -142,10 +169,7 @@ def reset_trade_fields():
     # gets reused later via "+ Add another block").
     trade_date = st.session_state.get("trade_date", date.today())
     is_dam = st.session_state.get("is_dam", True)
-    default_start = default_block_start(trade_date, is_dam)
-    default_end = (
-        dam_default_end_date(default_start, "HL") if is_dam else default_start
-    )
+    default_start, default_end = block_date_defaults(trade_date, is_dam)
     for bid in st.session_state.block_ids:
         st.session_state.pop(block_grid_key(bid), None)
         st.session_state.pop(version_key(bid), None)

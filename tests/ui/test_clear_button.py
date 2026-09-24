@@ -94,13 +94,11 @@ class TestClearButton:
         # quirk (confirmed separately in tests/ui/test_paste_ui.py) — this
         # checks the values are the right ones and set unconditionally,
         # which is the part that actually matters.
-        from domain.shapes import dam_default_end_date
-        from domain.trade import default_block_start
+        from ui.session import block_date_defaults
 
         at = _run()
         trade_date, is_dam = at.session_state["trade_date"], at.session_state["is_dam"]
-        expected_start = default_block_start(trade_date, is_dam)
-        expected_end = dam_default_end_date(expected_start, "HL")
+        expected_start, expected_end = block_date_defaults(trade_date, is_dam)
 
         at.text_input(key="paste_box").set_value(
             "EPE buys 100mw he17-22 Fri only springer $88"

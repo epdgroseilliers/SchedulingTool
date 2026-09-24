@@ -9,74 +9,25 @@ isn't a silent no-op while the rest of the desk's bid files get built out.
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 import data.bidfiles.swpw as swpw
 from domain.bidfiles import LONG, SHORT, build_bid_lines, market_groups, validate_split
+from ui.scheduling.bidgrid import render_bid_grid
 from ui.scheduling.state import (
+    BIDFILE_DIALOG,
+    arm_dialog,
     bidfile_market,
-    bidfile_split,
     bidfile_splits_for,
     close_bidfile,
-    set_bidfile_split,
+    dialog_was_dismissed,
 )
-from ui.scheduling.widgets import hours_editor
 
 #: market name -> its writer module. Each one is expected to expose
 #: write_bid_file(flow_date, short_lines, long_lines, overwrite=...) and
 #: target_path(flow_date) — see data/bidfiles/swpw.py.
 BUILDERS = {"SWPW": swpw}
-
-SIDE_LABEL = {SHORT: "SHORT — Source > market", LONG: "LONG — market > Sink"}
-
-
-def _empty_line(mw_by_hour=None):
-    return {"code": "", "price": None, "mw_by_hour": dict(mw_by_hour or {})}
-
-
-def _render_group(market, side, pse, agg_mw_by_hour, flow_date):
-    """One counterparty's group: its line(s), each with a code, a price,
-    and its own editable 24h schedule. Returns the edited lines (the
-    caller persists them) — always via set_bidfile_split, right after,
-    since every widget change here already triggers a rerun.
-    """
-    lines = bidfile_split(market, side, pse)
-    if not lines:
-        lines = [_empty_line(agg_mw_by_hour)]
-
-    total = sum(agg_mw_by_hour.values())
-    st.markdown(f"**{pse}** · {side} · {total:,.0f} MWh")
-
-    edited_lines = []
-    for i, line in enumerate(lines):
-        cols = st.columns([2, 1.2, 6], vertical_alignment="top")
-        code_label = "GCA" if side == SHORT else "LCA"
-        code = cols[0].text_input(
-            code_label, value=line.get("code") or "",
-            key=f"mv_bf_code_{market}_{side}_{pse}_{i}",
-            label_visibility="visible" if i == 0 else "collapsed",
-        )
-        price = cols[1].number_input(
-            "Price", value=line.get("price"), step=1.0,
-            key=f"mv_bf_price_{market}_{side}_{pse}_{i}",
-            label_visibility="visible" if i == 0 else "collapsed",
-        )
-        with cols[2]:
-            mw_by_hour = hours_editor(
-                line.get("mw_by_hour") or {}, flow_date,
-                key=f"mv_bf_hours_{market}_{side}_{pse}_{i}",
-            )
-        edited_lines.append({"code": code, "price": price, "mw_by_hour": mw_by_hour})
-
-    set_bidfile_split(market, side, pse, edited_lines)
-
-    for error in validate_split(side, pse, agg_mw_by_hour, edited_lines):
-        st.error(error)
-
-    if st.button("+ Split", key=f"mv_bf_split_{market}_{side}_{pse}"):
-        edited_lines.append(_empty_line())
-        set_bidfile_split(market, side, pse, edited_lines)
-        st.rerun()
 
 
 def _render_generate(market, groups, flow_date, writer):
@@ -88,8 +39,6 @@ def _render_generate(market, groups, flow_date, writer):
         for e in errors:
             st.error(e)
         if short_lines or long_lines:
-            import pandas as pd
-
             rows = [
                 {"Side": SHORT, "Code": ln["code"], "PSE": ln["pse"],
                  "Price": ln["price"], "MWh": sum(ln["mw_by_hour"].values())}
@@ -112,6 +61,7 @@ def _render_generate(market, groups, flow_date, writer):
                 path = writer.write_bid_file(flow_date, short_lines, long_lines, overwrite=False)
             except FileExistsError:
                 st.session_state.mv_bidfile_conflict = str(writer.target_path(flow_date))
+                arm_dialog(BIDFILE_DIALOG)
                 st.rerun()
             except Exception as e:
                 st.error(f"Could not write the bid file: {e}")
@@ -143,6 +93,9 @@ def render_bidfile_popup(legs, links, flow_date):
     market = bidfile_market()
     if not market:
         return False
+    if dialog_was_dismissed(BIDFILE_DIALOG):
+        close_bidfile()
+        return False
 
     @st.dialog(f"{market} bid file", width="large")
     def _dialog():
@@ -163,18 +116,28 @@ def render_bidfile_popup(legs, links, flow_date):
             return
 
         st.caption(
-            "One line per counterparty, aggregated for the day. Enter the "
-            "GCA (SHORT) or LCA (LONG) to bid at, and split a counterparty "
-            "into more than one with **+ Split** if it needs more than one "
-            "code."
+            "Hours down the index, a MW and a price column under every "
+            "GCA/LCA. **+** splits a counterparty across another code: type "
+            "MW into the new pair and the first gives way. A price covers "
+            "its whole line."
         )
-        for side in (SHORT, LONG):
-            side_groups = {pse: agg for (s, pse), agg in groups.items() if s == side}
-            if not side_groups:
-                continue
-            st.subheader(SIDE_LABEL[side])
-            for pse, agg in sorted(side_groups.items()):
-                _render_group(market, side, pse, agg, flow_date)
+        if render_bid_grid(market, groups):
+            # st.rerun() runs the whole script, which is also what a
+            # dismissal looks like — say this one isn't.
+            arm_dialog(BIDFILE_DIALOG)
+            st.rerun()
+
+        # One box, not one per message: on a busy day most of these are just
+        # "not filled in yet", and a stack of full-width alerts under a grid
+        # this compact buries the grid itself.
+        splits = bidfile_splits_for(market)
+        errors = [
+            error
+            for (side, pse), agg in sorted(groups.items())
+            for error in validate_split(side, pse, agg, splits.get((side, pse), []))
+        ]
+        if errors:
+            st.error("\n".join(f"- {error}" for error in errors))
 
         _render_generate(market, groups, flow_date, writer)
 

@@ -12,9 +12,9 @@ from domain.grid import (
     dates_in_range,
     make_block_grid,
 )
-from domain.shapes import dam_default_end_date, generate_block_grid, shape_to_he
-from domain.trade import default_block_start
+from domain.shapes import generate_block_grid, shape_to_he
 from ui.session import (
+    block_date_defaults,
     block_grid_key,
     dates_last_default_keys,
     get_version,
@@ -61,8 +61,9 @@ def get_block_grid(bid, dates, shape, mw):
 
 def sync_block_dates(bid, default_start, default_end):
     """Keep a pristine block's Start/End Date following `default_start`/
-    `default_end` (which track IsDAM and, for HL/LL, the WECC calendar —
-    see dam_default_end_date) until the trader diverges from it — by
+    `default_end` (which track IsDAM and the WECC calendar's own trading
+    session — see ui.session.block_date_defaults) until the trader diverges
+    from it — by
     editing either date directly, or by using Generate/Clear, at which
     point the block has real content and silently moving its date range
     could drop entered MW values (get_block_grid reconciles to whatever
@@ -111,7 +112,9 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
     """
     st.subheader("Schedule")
 
-    new_block_default_start = default_block_start(trade_date, is_dam)
+    new_block_default_start, new_block_default_end = block_date_defaults(
+        trade_date, is_dam
+    )
 
     block_grids = {}
     block_ranges = {}
@@ -125,15 +128,6 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                 specs.append(1.0)
             row = st.columns(specs, vertical_alignment="bottom")
             dcol1, dcol2, gcol1, gcol2, gcol3, gcol4 = row[:6]
-
-            # Peeked from session_state rather than the widget below (which
-            # hasn't been created yet this run) — falls back to the same
-            # "HL" the Shape widget itself defaults to for a brand-new block.
-            current_shape = st.session_state.get(f"shape_{bid}", "HL")
-            new_block_default_end = (
-                dam_default_end_date(new_block_default_start, current_shape)
-                if is_dam else new_block_default_start
-            )
 
             # sync_block_dates may just have written today's default straight
             # into session_state; passing `value=` as well on that same call

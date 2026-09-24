@@ -27,6 +27,9 @@ def _load_calendar_window(window_start: date, window_end: date) -> pd.DataFrame:
         )
     df["FlowDate"] = pd.to_datetime(df["FlowDate"]).dt.date
     df["IsPeak"] = df["IsPeak"].astype(bool)
+    # Nullable on purpose: TradeDate is the *session* a flow date belongs
+    # to, and the oldest rows predate the column.
+    df["TradeDate"] = pd.to_datetime(df["TradeDate"], errors="coerce").dt.date
     return df
 
 
@@ -46,3 +49,28 @@ def is_peak_map(start_date: date, end_date: date) -> dict:
     """Map each FlowDate in range to its IsPeak flag from the WECC calendar."""
     df = get_calendar(start_date, end_date)
     return dict(zip(df["FlowDate"], df["IsPeak"]))
+
+
+#: How far either side of a trade date to read sessions. A long weekend or
+#: a holiday run is the longest gap between two of them.
+SESSION_LOOKAROUND_DAYS = 10
+
+
+def sessions_near(trade_date: date) -> dict:
+    """{TradeDate: [FlowDate, ...]} for the trading sessions around
+    `trade_date` — itself, plus enough either side to find the one before.
+
+    One session covers one or more flow dates (a Friday covers the
+    weekend), and a day the market doesn't trade has no session at all —
+    which is why this is a lookup rather than arithmetic on the trade date.
+    """
+    df = get_calendar(
+        trade_date - timedelta(days=SESSION_LOOKAROUND_DAYS),
+        trade_date + timedelta(days=SESSION_LOOKAROUND_DAYS),
+    )
+    sessions = {}
+    for session, flow_date in zip(df["TradeDate"], df["FlowDate"]):
+        if session is None or pd.isna(session):
+            continue
+        sessions.setdefault(session, []).append(flow_date)
+    return {session: sorted(flows) for session, flows in sessions.items()}
