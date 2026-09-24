@@ -44,7 +44,9 @@ COUNTERPARTY_ALIASES = {
     "PGE": "PGEM",
     "SCE": "SCET",
     "NWMT": "NWDS",
-    "CONOCO": "CONC",
+    "CONOCO": "CONC",   
+    "TEP": "TEPM",
+    "TEPC": "TEPM"
 }
 
 LOCATION_ALIASES = {
