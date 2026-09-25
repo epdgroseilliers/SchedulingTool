@@ -90,6 +90,12 @@ class TradeLeg:
     `mw_by_hour` holds only the hours that actually flow, so an empty one
     means this trade doesn't reach this date and the leg is dropped before
     it ever reaches the board.
+
+    `start_date`/`stop_date` are the *whole trade's* range, not this day's —
+    the leg is one date out of that range. They're carried so that linking
+    on one day can find the other days the same trade flows (see
+    ui.scheduling.state.propagate_link). Both are None on a market leg,
+    which has no trade behind it and therefore exists on any day.
     """
 
     key: str
@@ -102,6 +108,8 @@ class TradeLeg:
     price: str = ""
     index: str = ""
     trade_id: object = None
+    start_date: object = None
+    stop_date: object = None
 
     @property
     def is_market(self):
@@ -160,6 +168,8 @@ def leg_from_row(row, flow_date, is_peak, key, source):
         price=row.get("price") or "",
         index=row.get("index") or "",
         trade_id=row.get("trade_id"),
+        start_date=row["start_date"],
+        stop_date=row["stop_date"],
     )
 
 
@@ -221,11 +231,15 @@ def legs_from_session_trades(trades, flow_date, is_peak):
                     legs.append(leg)
             continue
 
+        schedule = t.get("schedule", [])
         mw_by_hour = _clean_mw_by_hour(
-            {he: mw for d, he, mw in t.get("schedule", []) if d == flow_date}
+            {he: mw for d, he, mw in schedule if d == flow_date}
         )
         if not mw_by_hour:
             continue
+        # The trade's whole range, not this day's — every date its grid
+        # carries an hour for. See TradeLeg.start_date.
+        flow_dates = [d for d, _, mw in schedule if mw and float(mw) > 0]
         legs.append(
             TradeLeg(
                 key=f"session:{i}",
@@ -237,6 +251,8 @@ def legs_from_session_trades(trades, flow_date, is_peak):
                 mw_by_hour=mw_by_hour,
                 price=base["price"] or "",
                 index=base["index"] or "",
+                start_date=min(flow_dates) if flow_dates else flow_date,
+                stop_date=max(flow_dates) if flow_dates else flow_date,
             )
         )
     return legs, warnings
@@ -250,12 +266,21 @@ class Link:
     """A buy square paired with a sell square, plus the MW-per-hour the
     trader allocated to that pairing. Many-to-many by construction: nothing
     stops several links touching the same key, which is exactly how one buy
-    gets covered by three sells."""
+    gets covered by three sells.
+
+    **A link belongs to exactly one flow date.** A leg's key doesn't carry
+    one (`db:412` is the same key on every day that trade flows), so without
+    this field a two-day trade's two squares resolve to the same link — one
+    `mw_by_hour` shared between them, where editing either day rewrote the
+    other. Filter a book with `links_on()` before handing it to anything
+    that draws or totals it.
+    """
 
     link_id: str
     buy_key: str
     sell_key: str
     mw_by_hour: dict = field(default_factory=dict)
+    flow_date: object = None
 
     @property
     def hours(self):
@@ -283,6 +308,18 @@ def key_for_side(direction):
 
 def links_for(key, links):
     return [ln for ln in links if ln.touches(key)]
+
+
+def links_on(links, flow_date):
+    """Just this flow date's links.
+
+    The link book is session-wide and spans every date the trader has
+    worked on; everything that draws, totals or bids a day must see only
+    that day's, or one day's allocation shows up as another's. A link with
+    no date at all (one made before links carried one) belongs to no day
+    and is dropped rather than guessed at.
+    """
+    return [ln for ln in links if ln.flow_date == flow_date and ln.flow_date is not None]
 
 
 def allocated_by_hour(key, links):
@@ -361,11 +398,15 @@ def suggest_allocation(buy_leg, sell_leg, links):
 
 
 def make_link(link_id, buy_leg, sell_leg, mw_by_hour):
+    """Both ends of a link are always the same day's legs — a market leg's
+    key carries the date and a trade leg is built for one — so the link
+    takes its flow date from them rather than being told separately."""
     return Link(
         link_id=link_id,
         buy_key=buy_leg.key,
         sell_key=sell_leg.key,
         mw_by_hour=_clean_mw_by_hour(mw_by_hour),
+        flow_date=buy_leg.flow_date or sell_leg.flow_date,
     )
 
 
@@ -392,9 +433,14 @@ def market_legs(links, flow_date):
     than the sum of those links. So it's derived fresh from the link book on
     every render rather than stored, which also means removing the last link
     to a market makes its square disappear on its own.
+
+    Other days' links are ignored even if a caller passes the whole book: a
+    market key carries its own flow date, so mixing days here put a chip on
+    the board that the day's bid-file builder couldn't then see — the chip
+    and the builder disagreeing about the same market.
     """
     by_key = {}
-    for ln in links:
+    for ln in links_on(links, flow_date):
         for key in (ln.buy_key, ln.sell_key):
             parsed = parse_market_key(key)
             if parsed is None:

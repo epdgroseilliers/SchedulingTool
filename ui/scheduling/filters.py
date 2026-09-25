@@ -11,12 +11,15 @@ loaded*; PSE and POR/POD can only offer the values that day actually
 contains, so they render after the load, from the legs themselves.
 """
 
-from datetime import date, timedelta
-
 import streamlit as st
 
 from data.matching import clear_cache
-from ui.scheduling.state import ALL_SOURCES, restore_hidden
+from ui.scheduling.state import (
+    ALL_SOURCES,
+    default_flow_date,
+    remember_flow_date,
+    restore_hidden,
+)
 from ui.session import widget_defaults
 
 
@@ -51,9 +54,13 @@ def render_date_row():
         key="mv_flow_date",
         label_visibility="collapsed",
         help="One flow date at a time. A trade spanning several days appears "
-        "on each of them, with that day's own hours.",
-        **widget_defaults("mv_flow_date", value=date.today() + timedelta(days=1)),
+        "on each of them, with that day's own hours. The page comes back to "
+        "whichever date you were last on.",
+        **widget_defaults("mv_flow_date", value=default_flow_date()),
     )
+    # Outside widget state, so leaving the page can't discard it — see
+    # ui.scheduling.state.FLOW_DATE_MEMORY.
+    remember_flow_date(flow_date)
     if cols[4].button("↻", width="stretch", help="Re-read the book from the database."):
         clear_cache()
         st.rerun()

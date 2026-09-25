@@ -12,6 +12,7 @@ from domain.trade import (
     has_trading_session,
     format_price,
     rare_fields_set,
+    session_horizon,
 )
 
 
@@ -129,6 +130,36 @@ class TestDefaultFlowWindow:
                 trade_date,
                 trade_date,
             )
+
+
+class TestSessionHorizon:
+    """How far forward the app may act on its own — the last flow date of
+    the session being traded. Beyond it nothing has been traded yet, so a
+    link auto-propagated out there has no position behind it."""
+
+    SESSIONS = TestDefaultFlowWindow.SESSIONS
+
+    def test_it_is_the_last_flow_date_of_that_days_session(self):
+        # Friday 9/25 sells 9/27 and 9/28, so 9/28 is as far as anything
+        # may reach on its own.
+        assert session_horizon(date(2026, 9, 25), self.SESSIONS) == date(2026, 9, 28)
+
+    def test_a_one_day_session_reaches_only_the_next_day(self):
+        assert session_horizon(date(2026, 9, 21), self.SESSIONS) == date(2026, 9, 22)
+
+    def test_a_day_with_no_session_falls_back_to_the_live_one(self):
+        # Saturday: the market didn't trade, but Friday's session is still
+        # the one being scheduled, so its horizon still stands.
+        assert session_horizon(date(2026, 9, 26), self.SESSIONS) == date(2026, 9, 28)
+        assert session_horizon(date(2026, 9, 27), self.SESSIONS) == date(2026, 9, 28)
+
+    def test_a_date_before_any_session_has_no_horizon(self):
+        assert session_horizon(date(2026, 9, 1), self.SESSIONS) is None
+
+    def test_an_unreadable_calendar_has_no_horizon(self):
+        # None means "don't cap" — a DB hiccup shouldn't silently stop
+        # links propagating, the same stance has_trading_session takes.
+        assert session_horizon(date(2026, 9, 25), {}) is None
 
 
 class TestDbInputErrors:

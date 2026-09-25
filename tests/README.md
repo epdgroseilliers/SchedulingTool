@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-546 tests total: all but 16 run with no network dependency beyond what
+583 tests total: all but 16 run with no network dependency beyond what
 rendering the app already needs (see below); those 16 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them.
@@ -56,7 +56,8 @@ tests/
     test_clear_button.py     the Clear button and the post-Add-Trade reset
     test_actions_ui.py       local Add Trade, Preview DB Insert (db),
                               past-date gate, the real-insert path (mocked)
-    test_scheduling_view.py  the Phase 2 page end to end: filters, board
+    test_scheduling_view.py  the Phase 2 page end to end: filters, the flow
+                              date surviving a trip to the other page, board
                               events, the schedule popup, market chips. Runs
                               pages/1_Scheduling_View.py with the bilateral
                               DB stubbed to an empty book, so the board is
@@ -79,6 +80,16 @@ tests/
                               width) and what it makes of each event
                               (rebalancing a split, dropping one, the replay
                               guard)
+    test_multiday_links.py   a trade spanning several flow dates: one link
+                              per day, created on every day both trades
+                              flow *later in the session being traded* —
+                              never a day before the one linked on — and
+                              independent afterwards: editing or deleting
+                              one day leaves the others alone, and the
+                              bid-file builder starts each day from its own
+                              position. The session horizon is pinned by a
+                              fixture: what it covers otherwise depends on
+                              the weekday the suite runs
     test_bidgrid_frontend.py runs tests/frontend/bid_grid_checks.js, and
                               checks the Python/JS event contract — plus that
                               the column widths Python sizes the modal by

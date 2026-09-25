@@ -35,7 +35,9 @@ def _render_generate(market, groups, flow_date, writer):
     c1, c2 = st.columns([1, 1])
 
     if c1.button("Preview lines", width="stretch"):
-        short_lines, long_lines, errors = build_bid_lines(groups, bidfile_splits_for(market))
+        short_lines, long_lines, errors = build_bid_lines(
+            groups, bidfile_splits_for(market, flow_date)
+        )
         for e in errors:
             st.error(e)
         if short_lines or long_lines:
@@ -52,7 +54,9 @@ def _render_generate(market, groups, flow_date, writer):
 
     conflict = st.session_state.get("mv_bidfile_conflict")
     if c2.button("Generate Bid File", type="primary", width="stretch"):
-        short_lines, long_lines, errors = build_bid_lines(groups, bidfile_splits_for(market))
+        short_lines, long_lines, errors = build_bid_lines(
+            groups, bidfile_splits_for(market, flow_date)
+        )
         if errors:
             for e in errors:
                 st.error(e)
@@ -73,7 +77,9 @@ def _render_generate(market, groups, flow_date, writer):
         st.warning(f"{Path(conflict).name} already exists.")
         confirmed = st.checkbox("Overwrite it", key="mv_bidfile_overwrite_confirm")
         if confirmed and st.button("Overwrite and Generate", type="primary"):
-            short_lines, long_lines, errors = build_bid_lines(groups, bidfile_splits_for(market))
+            short_lines, long_lines, errors = build_bid_lines(
+                groups, bidfile_splits_for(market, flow_date)
+            )
             if errors:
                 for e in errors:
                     st.error(e)
@@ -121,7 +127,7 @@ def render_bidfile_popup(legs, links, flow_date):
             "MW into the new pair and the first gives way. A price covers "
             "its whole line."
         )
-        if render_bid_grid(market, groups):
+        if render_bid_grid(market, flow_date, groups):
             # st.rerun() runs the whole script, which is also what a
             # dismissal looks like — say this one isn't.
             arm_dialog(BIDFILE_DIALOG)
@@ -130,7 +136,7 @@ def render_bidfile_popup(legs, links, flow_date):
         # One box, not one per message: on a busy day most of these are just
         # "not filled in yet", and a stack of full-width alerts under a grid
         # this compact buries the grid itself.
-        splits = bidfile_splits_for(market)
+        splits = bidfile_splits_for(market, flow_date)
         errors = [
             error
             for (side, pse), agg in sorted(groups.items())

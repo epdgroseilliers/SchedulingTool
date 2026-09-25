@@ -199,7 +199,7 @@ def _grid(at, event, seq=None):
 
 
 def _lines(at, side="SHORT", pse="AZPS"):
-    return at.session_state["mv_bidfile_splits"][("SWPW", side, pse)]
+    return at.session_state["mv_bidfile_splits"][("SWPW", FLOW, side, pse)]
 
 
 class TestApplyingAnEdit:
@@ -302,7 +302,7 @@ class TestIgnoringWhatItShould:
             "type": "code", "side": SHORT, "pse": "NOBODY", "line": 0, "value": "X",
         })
         assert not at.exception, [e.value for e in at.exception]
-        assert ("SWPW", SHORT, "NOBODY") not in at.session_state["mv_bidfile_splits"]
+        assert ("SWPW", FLOW, SHORT, "NOBODY") not in at.session_state["mv_bidfile_splits"]
 
     def test_an_event_for_a_line_that_isnt_there_is_ignored(self, no_bilateral_db):
         at = _grid(_open_grid(), {

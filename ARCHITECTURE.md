@@ -29,7 +29,9 @@ domain/       Pure business logic — no Streamlit import anywhere in this
   matching.py   Phase 2: re-expanding a stored date-range + He row back
                 down to one flow date's hours (the reverse of
                 data.bilateral.compress_schedule), the buy/sell link model,
-                and the open-position arithmetic over it.
+                and the open-position arithmetic over it. A link belongs to
+                one flow date (links_on): a leg's key doesn't carry one, so
+                without that a multi-day trade's days share one link.
   bidfiles.py   Phase 2: grouping a market's links by counterparty into
                 SHORT/LONG bid lines, validating a trader's split of one
                 into more than one GCA/LCA, and rebalancing the rest of a
@@ -62,7 +64,9 @@ ui/           Streamlit rendering, one module per page section. Each
                  the first.
     state.py       Its session state (links and hidden squares are
                    session-only) and assembling a flow date's legs from the
-                   DB + this session's trades.
+                   DB + this session's trades. Also propagate_link, which
+                   gives every other day the two trades share its own
+                   independent link.
     filters.py     Flow date, source/PSE/POR-POD, Refresh, Restore hidden.
     board.py       The adapter for the trade_board component: legs+links ->
                    its JSON payload, and its events -> state changes.
@@ -73,10 +77,11 @@ ui/           Streamlit rendering, one module per page section. Each
                    — SWPW only so far: the caption, what doesn't reconcile,
                    Preview and Generate.
     bidgrid.py     The adapter for the bid_grid component: a market's
-                   grouped position -> its payload, its events -> state. It
-                   also sizes the modal, since Python is the only side that
-                   knows how many columns there will be before the grid is
-                   drawn.
+                   grouped position -> its payload, its events -> state,
+                   keyed by flow date as well as market since a bid file is
+                   written per day. It also sizes the modal, since Python is
+                   the only side that knows how many columns there will be
+                   before the grid is drawn.
     widgets.py     The one-row, HE1..HE24 hour editor — the link schedule
                    popup's (links.py). The bid-file builder has its own
                    component.
@@ -87,7 +92,9 @@ data/         External state: the database and the WECC calendar. Nothing
                  one holding PhysiqueBilateral).
   calendar.py    WECC calendar, cached: each flow date's on-/off-peak flag,
                  and the trading session (TradeDate) it belongs to, which
-                 is what a block's default date range comes from.
+                 is what a block's default date range comes from — and,
+                 through domain.trade.session_horizon, how far forward a
+                 link may auto-propagate.
   bilateral.py   Everything that reads or writes
                  PhysiqueBilateral.west.BilateralTrades — schedule
                  compression, DB lookups, duplicate check, the insert

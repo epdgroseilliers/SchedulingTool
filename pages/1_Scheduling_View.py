@@ -12,7 +12,7 @@ here.
 
 import streamlit as st
 
-from domain.matching import board_totals, filter_legs
+from domain.matching import board_totals, filter_legs, links_on
 from ui.nav import render_nav
 from ui.scheduling.bidfile import render_bidfile_popup
 from ui.scheduling.board import open_position_line, render_board
@@ -26,6 +26,7 @@ from ui.scheduling.state import (
     init_matching_state,
     load_legs,
     prune_selection,
+    take_propagated,
     visible_legs,
 )
 
@@ -38,9 +39,11 @@ st.set_page_config(
 init_matching_state()
 render_nav("scheduling")
 
-links = st.session_state.mv_links
-
 flow_date, sources, filter_slots, status_slot = render_date_row()
+# The link book spans every date worked on this session; this page is about
+# one day. Filtering here is what makes a multi-day trade's days independent
+# — every render, total and bid below takes `links` as a parameter.
+links = links_on(st.session_state.mv_links, flow_date)
 all_legs, notes = load_legs(flow_date, sources)
 sources, pses, por_pods = render_leg_filters(filter_slots, all_legs)
 # Rescue is applied here: a leg that fails the PSE/POR-POD filter is kept
@@ -50,6 +53,15 @@ legs = filter_legs(visible_legs(all_legs), links=links, pses=pses, por_pods=por_
 prune_selection(legs)
 
 status_slot.markdown(open_position_line(board_totals(legs, links)))
+
+# A link covers the whole overlap of the two trades, one independent link
+# per day. Days other than this one aren't on screen, so say which.
+propagated = take_propagated()
+if propagated:
+    st.toast(
+        "Also linked on " + ", ".join(d.isoformat() for d in propagated),
+        icon="🔗",
+    )
 
 if notes:
     with st.expander(f"⚠ {len(notes)} note(s)"):

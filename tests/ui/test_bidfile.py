@@ -116,7 +116,7 @@ def _fill_line(at, side, pse, code, price, line=0):
 
 
 def _lines(at, side=SHORT, pse="AZPS", market="SWPW"):
-    return at.session_state["mv_bidfile_splits"][(market, side, pse)]
+    return at.session_state["mv_bidfile_splits"][(market, FLOW, side, pse)]
 
 
 class TestOpeningThePopup:
@@ -327,7 +327,7 @@ class TestSplitting:
         # itself; this only checks the page wires that state through to a
         # real file correctly.
         at.session_state["mv_bidfile_splits"] = {
-            ("SWPW", "SHORT", "AZPS"): [
+            ("SWPW", FLOW, "SHORT", "AZPS"): [
                 {"code": "AZPS", "price": -1.0, "mw_by_hour": {h: 60.0 for h in range(7, 23)}},
                 {"code": "TEPC", "price": 0.0, "mw_by_hour": {h: 40.0 for h in range(7, 23)}},
             ]
@@ -346,7 +346,7 @@ class TestSplitting:
     ):
         at = _link_to_swpw(_run([BUY_LEG]))
         at.session_state["mv_bidfile_splits"] = {
-            ("SWPW", "SHORT", "AZPS"): [
+            ("SWPW", FLOW, "SHORT", "AZPS"): [
                 {"code": "AZPS", "price": -1.0, "mw_by_hour": {7: 60.0}},
                 {"code": "TEPC", "price": 0.0, "mw_by_hour": {7: 10.0}},  # 100 expected, only 70
             ]

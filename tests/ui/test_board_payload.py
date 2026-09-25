@@ -49,14 +49,14 @@ class TestSquares:
         assert "100 MW" in title and "1,600 MWh" in title and "Id 1" in title
 
     def test_the_bar_tracks_how_much_is_matched(self):
-        links = [Link("L1", "db:1", "db:2", {h: 50.0 for h in range(7, 23)})]
+        links = [Link("L1", "db:1", "db:2", {h: 50.0 for h in range(7, 23)}, FLOW)]
         squares, _, _ = build_payload([BUY_A, SELL_B], links, None, set())
         by_key = {s["key"]: s for s in squares}
         assert by_key["db:1"]["matched_frac"] == 0.5
         assert by_key["db:2"]["matched_frac"] == 50 / 60
 
     def test_over_allocation_is_called_out_in_the_tooltip(self):
-        links = [Link("L1", "db:1", "db:2", {7: 130.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 130.0}, FLOW)]
         squares, _, _ = build_payload([BUY_A, SELL_B], links, None, set())
         assert "over-allocated on HE 7" in squares[0]["title"]
 
@@ -78,7 +78,7 @@ class TestMarkets:
         # They stay off the canvas so the middle is free for the links —
         # which is the point of making the squares small.
         key = market_leg_key("CAISO", SELL, FLOW)
-        links = [Link("L1", "db:1", key, {h: 100.0 for h in range(7, 23)})]
+        links = [Link("L1", "db:1", key, {h: 100.0 for h in range(7, 23)}, FLOW)]
         legs = [BUY_A] + market_legs(links, FLOW)
         squares, markets, _ = build_payload(legs, links, None, set())
         assert [s["key"] for s in squares] == ["db:1"]
@@ -90,7 +90,7 @@ class TestMarkets:
 
     def test_a_used_market_chip_shows_its_mwh(self):
         key = market_leg_key("CAISO", SELL, FLOW)
-        links = [Link("L1", "db:1", key, {h: 100.0 for h in range(7, 23)})]
+        links = [Link("L1", "db:1", key, {h: 100.0 for h in range(7, 23)}, FLOW)]
         legs = [BUY_A] + market_legs(links, FLOW)
         _, markets, _ = build_payload(legs, links, None, set())
         assert next(m for m in markets if m["name"] == "CAISO")["mwh"] == "1,600"
@@ -98,7 +98,7 @@ class TestMarkets:
 
 class TestWires:
     def test_a_wire_carries_both_ends_and_its_weight(self):
-        links = [Link("L1", "db:1", "db:2", {h: 60.0 for h in range(7, 23)})]
+        links = [Link("L1", "db:1", "db:2", {h: 60.0 for h in range(7, 23)}, FLOW)]
         _, _, wires = build_payload([BUY_A, SELL_B], links, None, set())
         assert len(wires) == 1
         assert (wires[0]["buy_key"], wires[0]["sell_key"]) == ("db:1", "db:2")
@@ -107,7 +107,7 @@ class TestWires:
 
     def test_a_market_end_names_the_market_so_it_can_anchor_on_the_rail(self):
         key = market_leg_key("CAISO", SELL, FLOW)
-        links = [Link("L1", "db:1", key, {7: 100.0})]
+        links = [Link("L1", "db:1", key, {7: 100.0}, FLOW)]
         legs = [BUY_A] + market_legs(links, FLOW)
         _, _, wires = build_payload(legs, links, None, set())
         assert wires[0]["sell_market"] == "CAISO"
@@ -117,14 +117,14 @@ class TestWires:
         # A filtered-out or cleared square takes its lines with it. Left in,
         # the line hangs off wherever that square last sat, pointing at
         # nothing — the link itself is untouched and comes back with it.
-        links = [Link("L1", "db:1", "db:2", {7: 60.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 60.0}, FLOW)]
         _, _, wires = build_payload([BUY_A], links, None, set())
         assert wires == []
 
     def test_the_other_links_still_draw(self):
         links = [
-            Link("L1", "db:1", "db:2", {7: 60.0}),
-            Link("L2", "db:1", "db:9", {7: 10.0}),
+            Link("L1", "db:1", "db:2", {7: 60.0}, FLOW),
+            Link("L2", "db:1", "db:9", {7: 10.0}, FLOW),
         ]
         _, _, wires = build_payload([BUY_A, SELL_B], links, None, set())
         assert [w["link_id"] for w in wires] == ["L1"]
@@ -134,7 +134,7 @@ class TestRevision:
     def test_it_changes_when_the_links_change(self):
         before = board_revision(FLOW, [BUY_A, SELL_B], [], None)
         after = board_revision(
-            FLOW, [BUY_A, SELL_B], [Link("L1", "db:1", "db:2", {7: 10.0})], None
+            FLOW, [BUY_A, SELL_B], [Link("L1", "db:1", "db:2", {7: 10.0}, FLOW)], None
         )
         assert before != after
 

@@ -43,14 +43,14 @@ class TestMarketGroups:
         # MAG buys -> the seller's generation needs wheeling in -> SHORT.
         azps = real_leg("db:1", BUY, "AZPS")
         mkt = market_leg(SELL)  # buy=azps, sell=market, per ui.scheduling.board
-        links = [Link("L1", "db:1", mkt.key, {7: 50.0})]
+        links = [Link("L1", "db:1", mkt.key, {7: 50.0}, FLOW)]
         groups = market_groups(MARKET, [azps, mkt], links, FLOW)
         assert groups == {(SHORT, "AZPS"): {7: 50.0}}
 
     def test_a_link_to_a_mag_sale_is_a_long_position(self):
         azps = real_leg("db:1", SELL, "AZPS")
         mkt = market_leg(BUY)  # buy=market, sell=azps
-        links = [Link("L1", mkt.key, "db:1", {7: 50.0})]
+        links = [Link("L1", mkt.key, "db:1", {7: 50.0}, FLOW)]
         groups = market_groups(MARKET, [azps, mkt], links, FLOW)
         assert groups == {(LONG, "AZPS"): {7: 50.0}}
 
@@ -58,8 +58,8 @@ class TestMarketGroups:
         azps = real_leg("db:1", BUY, "AZPS")
         mkt = market_leg(SELL)
         links = [
-            Link("L1", "db:1", mkt.key, {7: 50.0}),
-            Link("L2", "db:1", mkt.key, {7: 20.0, 8: 30.0}),
+            Link("L1", "db:1", mkt.key, {7: 50.0}, FLOW),
+            Link("L2", "db:1", mkt.key, {7: 20.0, 8: 30.0}, FLOW),
         ]
         groups = market_groups(MARKET, [azps, mkt], links, FLOW)
         assert groups == {(SHORT, "AZPS"): {7: 70.0, 8: 30.0}}
@@ -70,13 +70,13 @@ class TestMarketGroups:
             key=market_leg_key("CAISO", SELL, FLOW), source="market",
             direction=SELL, pse="CAISO", por_pod="Market", flow_date=FLOW,
         )
-        links = [Link("L1", "db:1", other_mkt.key, {7: 50.0})]
+        links = [Link("L1", "db:1", other_mkt.key, {7: 50.0}, FLOW)]
         assert market_groups(MARKET, [azps, other_mkt], links, FLOW) == {}
 
     def test_a_link_between_two_real_legs_is_ignored(self):
         a = real_leg("db:1", BUY, "AZPS")
         b = real_leg("db:2", SELL, "BPAT")
-        links = [Link("L1", "db:1", "db:2", {7: 50.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)]
         assert market_groups(MARKET, [a, b], links, FLOW) == {}
 
     def test_both_sides_can_appear_for_the_same_counterparty(self):
@@ -85,8 +85,8 @@ class TestMarketGroups:
         mkt_sell = market_leg(SELL)
         mkt_buy = market_leg(BUY)
         links = [
-            Link("L1", "db:1", mkt_sell.key, {7: 50.0}),
-            Link("L2", mkt_buy.key, "db:2", {7: 30.0}),
+            Link("L1", "db:1", mkt_sell.key, {7: 50.0}, FLOW),
+            Link("L2", mkt_buy.key, "db:2", {7: 30.0}, FLOW),
         ]
         groups = market_groups(MARKET, [buy_leg, sell_leg, mkt_sell, mkt_buy], links, FLOW)
         assert groups == {(SHORT, "AZPS"): {7: 50.0}, (LONG, "AZPS"): {7: 30.0}}

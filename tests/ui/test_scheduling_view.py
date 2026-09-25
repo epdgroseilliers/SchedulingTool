@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG
+from ui.scheduling.state import BIDFILE_DIALOG, FLOW_DATE_MEMORY, LINK_DIALOG
 
 PAGE_PATH = str(Path(__file__).resolve().parents[2] / "pages" / "1_Scheduling_View.py")
 
@@ -160,6 +160,39 @@ class TestFilters:
         at = _run([BUY_LEG, unrelated_sale])
         at.multiselect(key="mv_pse").set_value(["AZPS"]).run()
         assert any("Open sells **0**" in m.value for m in at.markdown)
+
+
+class TestTheFlowDateIsRemembered:
+    """Leaving the page and coming back must not lose the day being worked
+    on. Streamlit discards a widget's state on any script run that doesn't
+    render it, and stepping over to Add Trade is exactly such a run — which
+    is why the date is also held outside widget state."""
+
+    def test_the_first_visit_of_a_session_offers_tomorrow(self, no_bilateral_db):
+        at = _run()
+        assert at.date_input(key="mv_flow_date").value == FLOW
+
+    def test_it_comes_back_to_the_date_last_looked_at(self, no_bilateral_db):
+        at = _run()
+        picked = FLOW + timedelta(days=9)
+        at.date_input(key="mv_flow_date").set_value(picked).run()
+
+        # Coming back from Add Trade: the widget's own state is gone, and
+        # only the plain session keys survive. A fresh page run seeded with
+        # just the memory is exactly that situation — AppTest can't
+        # navigate, and deleting a live widget key corrupts its id map.
+        back = _run(**{FLOW_DATE_MEMORY: at.session_state[FLOW_DATE_MEMORY]})
+        assert not back.exception, [e.value for e in back.exception]
+        assert back.date_input(key="mv_flow_date").value == picked
+
+    def test_the_memory_outlives_the_widget_it_feeds(self, no_bilateral_db):
+        # The whole point: held under the widget's own key it would be
+        # discarded along with it, and the default would win every time.
+        at = _run()
+        picked = FLOW + timedelta(days=4)
+        at.date_input(key="mv_flow_date").set_value(picked).run()
+        del at.session_state["mv_flow_date"]
+        assert at.session_state[FLOW_DATE_MEMORY] == picked
 
 
 class TestBoardEvents:

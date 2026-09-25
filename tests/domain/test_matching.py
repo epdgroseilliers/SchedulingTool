@@ -21,6 +21,7 @@ from domain.matching import (
     leg_from_row,
     legs_from_db_rows,
     legs_from_session_trades,
+    links_on,
     make_link,
     market_leg_key,
     market_legs,
@@ -121,6 +122,12 @@ class TestLegFromRow:
     def test_an_hl_row_on_an_off_peak_day_yields_nothing(self):
         assert leg_from_row(self.row(), FLOW, False, "db:42", "db") is None
 
+    def test_it_carries_the_whole_trades_range_not_just_this_day(self):
+        # Linking on one day has to know which other days the same trade
+        # flows — see ui.scheduling.state.propagate_link.
+        lg = leg_from_row(self.row(), FLOW, True, "db:42", "db")
+        assert (lg.start_date, lg.stop_date) == (date(2026, 9, 17), date(2026, 9, 19))
+
     def test_he_label_and_mw_label_describe_the_day(self):
         lg = leg_from_row(self.row(he="17-22", mw=50), FLOW, True, "db:1", "db")
         assert lg.he_label == "17-22"
@@ -165,6 +172,8 @@ class TestLegsFromSessionTrades:
         assert len(legs) == 1
         assert legs[0].hours == [7, 8]
         assert warnings == []
+        # This day's hours, but the whole grid's range — the 19th is in it.
+        assert (legs[0].start_date, legs[0].stop_date) == (FLOW, date(2026, 9, 19))
 
     def test_a_trade_already_in_the_db_is_skipped(self):
         # It comes back through legs_from_db_rows instead; counting it here
@@ -205,7 +214,7 @@ class TestOpenAndMatched:
 
     def test_a_link_reduces_the_open_position_hour_by_hour(self):
         lg = leg("db:1", mw_by_hour={7: 100.0, 8: 100.0})
-        links = [Link("L1", "db:1", "db:2", {7: 40.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 40.0}, FLOW)]
         assert open_by_hour(lg, links) == {7: 60.0, 8: 100.0}
         assert matched_mwh(lg, links) == 40
         assert open_mwh(lg, links) == 160
@@ -214,8 +223,8 @@ class TestOpenAndMatched:
         # Many-to-many is the point: one buy covered by two sells.
         lg = leg("db:1", mw_by_hour={7: 100.0})
         links = [
-            Link("L1", "db:1", "db:2", {7: 60.0}),
-            Link("L2", "db:1", "db:3", {7: 40.0}),
+            Link("L1", "db:1", "db:2", {7: 60.0}, FLOW),
+            Link("L2", "db:1", "db:3", {7: 40.0}, FLOW),
         ]
         assert allocated_by_hour("db:1", links) == {7: 100.0}
         assert open_by_hour(lg, links) == {}
@@ -225,7 +234,7 @@ class TestOpenAndMatched:
         # The trader can overwrite any suggested allocation, so committing
         # more than the trade carries has to be possible — and visible.
         lg = leg("db:1", mw_by_hour={7: 100.0})
-        links = [Link("L1", "db:1", "db:2", {7: 130.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 130.0}, FLOW)]
         assert over_allocated_hours(lg, links) == {7: 30.0}
         assert open_by_hour(lg, links) == {}  # never negative
         assert open_mwh(lg, links) == 0
@@ -245,7 +254,7 @@ class TestSuggestAllocation:
     def test_it_never_re_commits_what_another_link_already_took(self):
         buy = leg("db:1", BUY, {7: 100.0})
         sell = leg("db:2", SELL, {7: 100.0})
-        existing = [Link("L1", "db:1", "db:3", {7: 70.0})]
+        existing = [Link("L1", "db:1", "db:3", {7: 70.0}, FLOW)]
         assert suggest_allocation(buy, sell, existing) == {7: 30.0}
 
     def test_a_market_takes_the_other_sides_whole_open_schedule(self):
@@ -272,13 +281,13 @@ class TestSuggestAllocation:
             por_pod="Market",
             flow_date=FLOW,
         )
-        existing = [Link("L1", "db:1", "db:2", {7: 75.0})]
+        existing = [Link("L1", "db:1", "db:2", {7: 75.0}, FLOW)]
         assert suggest_allocation(buy, market, existing) == {7: 25.0}
 
     def test_a_fully_allocated_pair_suggests_nothing(self):
         buy = leg("db:1", BUY, {7: 100.0})
         sell = leg("db:2", SELL, {7: 100.0})
-        existing = [Link("L1", "db:1", "db:2", {7: 100.0})]
+        existing = [Link("L1", "db:1", "db:2", {7: 100.0}, FLOW)]
         assert suggest_allocation(buy, sell, existing) == {}
 
 
@@ -295,11 +304,33 @@ class TestMakeLink:
         assert link.other_key("db:1") == "db:2"
         assert link.touches("db:2") and not link.touches("db:9")
 
+    def test_it_takes_the_flow_date_from_the_legs(self):
+        # A leg's key doesn't carry the date, so without this a two-day
+        # trade's two squares share one link and one allocation.
+        link = make_link("L1", leg("db:1", BUY), leg("db:2", SELL), {7: 50.0})
+        assert link.flow_date == FLOW
+
+
+class TestLinksOn:
+    def test_it_keeps_only_that_days_links(self):
+        other = date(2026, 9, 19)
+        today = Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)
+        tomorrow = Link("L2", "db:1", "db:2", {7: 50.0}, other)
+        assert links_on([today, tomorrow], FLOW) == [today]
+        assert links_on([today, tomorrow], other) == [tomorrow]
+
+    def test_an_undated_link_belongs_to_no_day(self):
+        # Rather than to every day, which is exactly the bug: one link
+        # rendered on each day of a trade, sharing one schedule.
+        undated = Link("L1", "db:1", "db:2", {7: 50.0})
+        assert links_on([undated], FLOW) == []
+        assert links_on([undated], None) == []
+
 
 class TestMarketLegs:
     def test_a_market_square_appears_only_because_a_link_reaches_it(self):
         key = market_leg_key("CAISO", SELL, FLOW)
-        links = [Link("L1", "db:1", key, {7: 50.0, 8: 50.0})]
+        links = [Link("L1", "db:1", key, {7: 50.0, 8: 50.0}, FLOW)]
         markets = market_legs(links, FLOW)
         assert len(markets) == 1
         m = markets[0]
@@ -309,11 +340,24 @@ class TestMarketLegs:
     def test_no_links_means_no_market_squares(self):
         assert market_legs([], FLOW) == []
 
+    def test_another_days_links_do_not_put_a_chip_on_this_day(self):
+        # A market key carries its own date, so a chip derived from another
+        # day's link is one this day's bid-file builder can't then see —
+        # the chip and the builder disagreeing about the same market.
+        other = date(2026, 9, 19)
+        key = market_leg_key("CAISO", SELL, other)
+        assert market_legs([Link("L1", "db:1", key, {7: 50.0}, other)], FLOW) == []
+
+    def test_a_market_leg_has_no_trade_range_behind_it(self):
+        key = market_leg_key("CAISO", SELL, FLOW)
+        m = market_legs([Link("L1", "db:1", key, {7: 50.0}, FLOW)], FLOW)[0]
+        assert (m.start_date, m.stop_date) == (None, None)
+
     def test_several_links_to_one_market_accumulate_into_one_square(self):
         key = market_leg_key("CAISO", SELL, FLOW)
         links = [
-            Link("L1", "db:1", key, {7: 50.0}),
-            Link("L2", "db:2", key, {7: 25.0, 8: 10.0}),
+            Link("L1", "db:1", key, {7: 50.0}, FLOW),
+            Link("L2", "db:2", key, {7: 25.0, 8: 10.0}, FLOW),
         ]
         markets = market_legs(links, FLOW)
         assert len(markets) == 1
@@ -329,7 +373,7 @@ class TestBoardTotals:
     def test_counts_both_sides_and_what_is_still_open(self):
         buy = leg("db:1", BUY, {7: 100.0, 8: 100.0})
         sell = leg("db:2", SELL, {7: 60.0})
-        links = [Link("L1", "db:1", "db:2", {7: 60.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 60.0}, FLOW)]
         totals = board_totals([buy, sell], links)
         assert totals["buy_mwh"] == 200
         assert totals["sell_mwh"] == 60
@@ -344,7 +388,7 @@ class TestBoardTotals:
         # it to "bought"/"sold" would double-count the position it absorbs.
         key = market_leg_key("CAISO", SELL, FLOW)
         buy = leg("db:1", BUY, {7: 100.0})
-        links = [Link("L1", "db:1", key, {7: 100.0})]
+        links = [Link("L1", "db:1", key, {7: 100.0}, FLOW)]
         totals = board_totals([buy] + market_legs(links, FLOW), links)
         assert totals["sell_mwh"] == 0
         assert totals["buy_open_mwh"] == 0
@@ -354,7 +398,7 @@ class TestSortAndFilter:
     def test_open_positions_come_first(self):
         open_leg = leg("db:open", BUY, {7: 100.0}, pse="ZZZZ")
         done_leg = leg("db:done", BUY, {7: 100.0}, pse="AAAA")
-        links = [Link("L1", "db:done", "db:2", {7: 100.0})]
+        links = [Link("L1", "db:done", "db:2", {7: 100.0}, FLOW)]
         assert [lg.key for lg in sort_legs([done_leg, open_leg], links)] == [
             "db:open",
             "db:done",
@@ -372,7 +416,7 @@ class TestSortAndFilter:
         # always somewhere to park a position — a PSE filter naming a
         # counterparty would otherwise take the markets away with it.
         key = market_leg_key("CAISO", SELL, FLOW)
-        links = [Link("L1", "db:1", key, {7: 50.0})]
+        links = [Link("L1", "db:1", key, {7: 50.0}, FLOW)]
         legs = [leg("db:1", BUY, pse="AZPS")] + market_legs(links, FLOW)
         kept = filter_legs(legs, pses=["BPAT"], por_pods=["MIDC"])
         assert [lg.pse for lg in kept] == ["CAISO"]
@@ -380,7 +424,7 @@ class TestSortAndFilter:
     def test_filtering_does_not_touch_the_links(self):
         # Filters narrow the view, not the data — PROJECT.md is explicit.
         a = leg("db:1", BUY)
-        links = [Link("L1", "db:1", "db:2", {7: 50.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)]
         filter_legs([a], pses=["NOBODY"])
         assert links[0].mw_by_hour == {7: 50.0}
 
@@ -393,7 +437,7 @@ class TestFilterRescue:
     def test_a_linked_leg_that_fails_the_filter_is_rescued(self):
         azps = leg("db:1", BUY, pse="AZPS")
         conc = leg("db:2", SELL, pse="CONC")
-        links = [Link("L1", "db:1", "db:2", {7: 50.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)]
         kept = filter_legs([azps, conc], links=links, pses=["AZPS"])
         assert {lg.key for lg in kept} == {"db:1", "db:2"}
 
@@ -413,7 +457,7 @@ class TestFilterRescue:
     def test_rescue_works_from_either_side_of_the_link(self):
         azps = leg("db:1", BUY, pse="AZPS")
         conc = leg("db:2", SELL, pse="CONC")
-        links = [Link("L1", "db:1", "db:2", {7: 50.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)]
         # Filtering to the *sell* side rescues the buy side just the same.
         kept = filter_legs([azps, conc], links=links, pses=["CONC"])
         assert {lg.key for lg in kept} == {"db:1", "db:2"}
@@ -421,7 +465,7 @@ class TestFilterRescue:
     def test_rescue_applies_to_the_por_pod_filter_too(self):
         azps = leg("db:1", BUY, pse="AZPS", por_pod="PALOVERDE500")
         conc = leg("db:2", SELL, pse="CONC", por_pod="MIDC")
-        links = [Link("L1", "db:1", "db:2", {7: 50.0})]
+        links = [Link("L1", "db:1", "db:2", {7: 50.0}, FLOW)]
         kept = filter_legs([azps, conc], links=links, por_pods=["PALOVERDE500"])
         assert {lg.key for lg in kept} == {"db:1", "db:2"}
 
@@ -433,8 +477,8 @@ class TestFilterRescue:
         b = leg("db:b", SELL, pse="BPAT")
         c = leg("db:c", BUY, pse="PACE")
         links = [
-            Link("L1", "db:a", "db:b", {7: 50.0}),
-            Link("L2", "db:c", "db:b", {7: 50.0}),
+            Link("L1", "db:a", "db:b", {7: 50.0}, FLOW),
+            Link("L2", "db:c", "db:b", {7: 50.0}, FLOW),
         ]
         kept = filter_legs([a, b, c], links=links, pses=["AZPS"])
         assert {lg.key for lg in kept} == {"db:a", "db:b"}
@@ -446,8 +490,8 @@ class TestFilterRescue:
         a = leg("db:a", BUY, pse="AZPS")
         b = leg("db:b", BUY, pse="BPAT")
         links = [
-            Link("L1", "db:a", key, {7: 50.0}),
-            Link("L2", "db:b", key, {7: 50.0}),
+            Link("L1", "db:a", key, {7: 50.0}, FLOW),
+            Link("L2", "db:b", key, {7: 50.0}, FLOW),
         ]
         legs = [a, b] + market_legs(links, FLOW)
         # Filtering to a PSE neither A nor B belongs to: the market chip
@@ -459,4 +503,4 @@ class TestFilterRescue:
     def test_no_filter_at_all_returns_everything_unchanged(self):
         a = leg("db:1", BUY)
         b = leg("db:2", SELL)
-        assert filter_legs([a, b], links=[Link("L1", "db:1", "db:2", {7: 1.0})]) == [a, b]
+        assert filter_legs([a, b], links=[Link("L1", "db:1", "db:2", {7: 1.0}, FLOW)]) == [a, b]

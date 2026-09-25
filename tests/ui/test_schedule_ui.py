@@ -103,11 +103,24 @@ class TestWideningDateRangeFollowsCalendar:
 
 
 class TestIsDamDrivesDefaultDates:
-    def test_isdam_true_defaults_start_to_tomorrow(self):
-        at = _run()
+    def test_isdam_true_defaults_the_dates_to_the_trade_dates_session(self):
+        # Not simply "tomorrow": the flow window comes from the WECC
+        # calendar's trading sessions, so a Friday's session covers the
+        # Sunday *and* the Monday. Derived from the live calendar rather
+        # than hardcoded — which is exactly what this test used to do, and
+        # why it only held on a mid-week day.
+        from data.calendar import sessions_near
+        from domain.trade import default_flow_window
+
         today = date.today()
+        sessions = sessions_near(today)
+        if not sessions:
+            pytest.skip("the WECC calendar could not be read")
+        start, end = default_flow_window(today, True, sessions)
+
+        at = _run()
         d = {x.label: x for x in at.date_input}
-        assert d["Start Date"].value == today + timedelta(days=1)
+        assert (d["Start Date"].value, d["End Date"].value) == (start, end)
 
     def test_isdam_false_defaults_start_to_trade_date(self):
         at = AppTest.from_file(APP_PATH, default_timeout=90)

@@ -70,6 +70,35 @@ def default_flow_window(trade_date, is_dam, sessions):
     return start, start
 
 
+def session_horizon(trade_date, sessions):
+    """The furthest flow date the trading session for `trade_date` reaches.
+
+    How far forward the app may act on its own — specifically, how far a
+    link may be auto-propagated across a trade's range (see
+    ui.scheduling.state.propagate_link). Beyond the current session's last
+    flow date nothing has been traded yet, so a link invented out there is
+    one the desk has no position behind and never asked for.
+
+    A day the market doesn't trade has no session of its own, so the most
+    recent session on or before it answers instead — that's the one whose
+    flow dates are still being scheduled. On a Saturday, Friday's session
+    is still the live one.
+
+    Returns None when the calendar says nothing at all, which callers read
+    as "don't cap" — a DB hiccup shouldn't quietly change what the app
+    does, the same stance the rest of this module takes.
+    """
+    if not sessions:
+        return None
+    flows = sessions.get(trade_date)
+    if flows:
+        return max(flows)
+    earlier = [day for day in sessions if day <= trade_date]
+    if not earlier:
+        return None
+    return max(sessions[max(earlier)])
+
+
 def has_trading_session(trade_date, sessions):
     """Whether the WECC calendar has a day-ahead session on this date — ie.
     whether a DAM trade can exist for it at all.

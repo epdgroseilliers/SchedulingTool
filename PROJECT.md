@@ -234,6 +234,14 @@ Clicking a square focuses it and dims everything not linked to it; clicking
 it again undims. **`×` on a square clears it off the board** — see
 *Hiding, not deleting*, below.
 
+**The flow date is remembered for the session.** The page opens on whatever
+date the trader was last looking at, and only falls back to tomorrow on the
+first visit. It has to be held *outside* widget state to do that: Streamlit
+discards a widget's state on any script run that doesn't render it, and a
+step over to Add Trade is exactly such a run — so the widget key alone
+snapped back to tomorrow on every return, however many days forward the
+trader was working.
+
 **Screen budget.** The whole page above the board is one row: flow date,
 source/PSE/POR-POD filters, a refresh button, and the three numbers the desk
 actually reads — **open buys, open sells, net**. The bought/sold totals were
@@ -281,6 +289,67 @@ session trade could in principle be broken by unchecking one source.
 Extending rescue there would mean always loading both sources regardless of
 the checkboxes — a real question, not implemented, since nobody has hit it
 yet and it costs an always-on DB round trip to fix speculatively.
+
+**A multi-day trade gets one link per flow date, and the days are
+independent.** A trade spanning 09/27 and 09/28 is a square on each day (see
+*Granularity*, above), so it is a separate `Link` on each — carrying its own
+`flow_date`, and filtered down to the day being viewed before anything
+draws, totals or bids it. The link book itself spans the session.
+
+Without that they were the *same* link: a leg's key carries no flow date
+(`db:412` is the same key on every day that trade flows), so both days
+resolved to one record with one `mw_by_hour`. Editing either day rewrote the
+other, the second day's square read as already matched, and the second day's
+bid file came up prefilled with the first day's lines.
+
+**Confirming a link links every *later* day both trades flow**, since a
+trader who has decided these two go together has decided it for the rest of
+the overlap, and re-drawing the same link once per day is the busywork this
+view exists to remove.
+
+**Forward only, never backward.** A day earlier than the one in front of the
+trader is a day they have already scheduled, and reaching back into it would
+rewrite finished work — quietly, on a day not even on screen. So linking on
+the last day a trade flows propagates nothing, which is right: there is no
+later day left to cover. Each of those days gets its *own* suggestion rather than a copy of
+the confirmed one — the days differ (an HL trade doesn't flow at all on an
+off-peak day; a day may already be partly linked elsewhere) and a copied
+allocation would over-commit the ones that differ. The dates are named in a
+toast, because links appearing on days that aren't on screen — and that feed
+those days' bid files — shouldn't be invisible.
+
+**Propagation stops at the end of the session being traded**
+(`domain.trade.session_horizon`): the last flow date of today's trading
+session, from the same TradeDate→FlowDate pairing a block's default dates
+come from. Beyond it nothing has been traded yet, so a link the app invented
+out there is one with no position behind it. A deal running weeks out still
+gets its link on the day it was drawn and on the rest of the session — just
+not on the weeks past it.
+
+The practical shape of that, since the sessions are short: traded on a
+**Friday** (covering Saturday *and* Sunday, say), a link drawn on the
+Saturday also lands on the Sunday. Traded on a **Monday**, whose session
+covers only Tuesday, a link propagates nowhere at all — correctly, because
+nothing beyond Tuesday has been traded. So propagation does real work
+exactly on the multi-day sessions, which is where re-drawing the same link
+by hand was the actual chore.
+
+A day the market doesn't trade has no session of its own, so the most recent
+one on or before it answers instead — on a Saturday, Friday's session is
+still the live one. A calendar that can't be read at all yields no horizon
+and propagation falls back to the trades' own range rather than refusing to
+act, the same stance `domain.trade` takes on a session-less trade date;
+`PROPAGATE_MAX_DAYS` is the backstop for that case alone.
+
+**The bid-file builder is per flow date too.** Its splits are keyed by day
+as well as by market and counterparty, and each day seeds from its own
+position with blank codes and the side's default price. Nothing carries
+across: the bid file is written per day, and a GCA agreed for one day is not
+one agreed for the next.
+
+Square positions and cleared squares are deliberately *not* per day — a leg
+key is the same on every day it flows, so the board keeps its layout as the
+trader steps through the dates.
 
 **Hiding, not deleting.** `×` on a square (or *✕ Clear* on the focused
 square's detail line — two routes, one findable and one fast) clears it off

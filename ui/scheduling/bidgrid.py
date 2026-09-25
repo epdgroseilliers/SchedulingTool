@@ -180,35 +180,39 @@ def dialog_css(sides):
     )
 
 
-def seed_state(market, groups):
+def seed_state(market, flow_date, groups):
     """Give every counterparty on the board a stored line before the grid
     draws it, so what's shown and what Generate reads are the same thing —
     including the side's default price, which is otherwise only a default in
-    the drawing."""
+    the drawing.
+
+    Seeded per flow date, from that date's own position: a bid file is
+    written per day, and each day starts from scratch.
+    """
     for (side, pse), agg in groups.items():
-        if not bidfile_split(market, side, pse):
-            set_bidfile_split(market, side, pse, [blank_line(side, agg)])
+        if not bidfile_split(market, flow_date, side, pse):
+            set_bidfile_split(market, flow_date, side, pse, [blank_line(side, agg)])
 
 
-def splits_for_groups(market, groups):
+def splits_for_groups(market, flow_date, groups):
     return {
-        (side, pse): bidfile_split(market, side, pse)
+        (side, pse): bidfile_split(market, flow_date, side, pse)
         for (side, pse) in groups
-        if bidfile_split(market, side, pse)
+        if bidfile_split(market, flow_date, side, pse)
     }
 
 
-def render_bid_grid(market, groups):
+def render_bid_grid(market, flow_date, groups):
     """Draw the grid and apply whatever the trader did to it. Returns True
     when something changed and the caller should rerun."""
-    seed_state(market, groups)
-    hours, sides = build_payload(groups, splits_for_groups(market, groups))
+    seed_state(market, flow_date, groups)
+    hours, sides = build_payload(groups, splits_for_groups(market, flow_date, groups))
     st.markdown(dialog_css(sides), unsafe_allow_html=True)
     event = bid_grid(hours=hours, sides=sides, revision=grid_revision(sides))
-    return handle_event(event, market, groups)
+    return handle_event(event, market, flow_date, groups)
 
 
-def handle_event(event, market, groups):
+def handle_event(event, market, flow_date, groups):
     """Apply one grid event, ignoring ones already applied.
 
     The `seq`/`instance` pair is the board's, for the board's reasons:
@@ -235,7 +239,9 @@ def handle_event(event, market, groups):
     agg = groups.get((side, pse))
     if agg is None or not isinstance(index, int):
         return False
-    lines = copy_lines(bidfile_split(market, side, pse) or [blank_line(side, agg)])
+    lines = copy_lines(
+        bidfile_split(market, flow_date, side, pse) or [blank_line(side, agg)]
+    )
 
     kind = event.get("type")
     if kind == "split":
@@ -276,5 +282,5 @@ def handle_event(event, market, groups):
     else:
         return False
 
-    set_bidfile_split(market, side, pse, lines)
+    set_bidfile_split(market, flow_date, side, pse, lines)
     return True

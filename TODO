@@ -1,11 +1,12 @@
 -Add bookout logic
 -Add trade suggestions from repetitive trades 
 -Add the compliance source specified and nws pop-ups
--Build the scheduling view with downstream bid files and tag building
 -Add coloring for NWS, NCS, SS/ACS attributes and don't allow links CISO>NCS and NWS>!NWS
--Fix bug on schedule start_date and end_date not following the wecc calendar
 -Improve variable schedule entry
     -Next we need to improve manually entering a variable schedule for a trade. The behavior I observe is that I need to enter each input twice for it to be saved in the data editor: the first entry isn't saved and the widget re renders to its old value, then a second entry correctly changes the widget state.
--have SS from SCL at JD be BNDY
--have the board heigh adjust to the number of trades entered
 -add defaults to GCA/LCA in SWPW bid files
+-Fix bug with linking and default view when trading two days (links seem to be made for both days for the same hours, behavior should be to treat them indenpendantly, link both days by default but allow trader to delete one day)
+-Fix bug with two day bid files. It seems to be mixing up both days.
+-Color links if MAG has to tag, MAG doesn't have to tag, Tagged
+-Start building tagging workflows
+    -I'm content with the mvp we've built for the entering a trade -> matching trades -> creating a bid file (only SWPW for now) workflow. The next step of it is reading paths and creating tags. For trades involving a counterparty (bilateral trades), we chat with the counterparties's schedulers on ICE chat and send each other paths of the form: HE1-6; Mead MAG (G @ SWPW) (SWPP tx CRSP>PNPK, 2nh TBD)(WALC tx PPK>MEAD, 7f 110704717) - MAG - EEMU - TNSK - MGM sink. I see multiple workflows for this. One is 1) the trader clicks on a link 2) it opens the Link Schedule pop-up as the app already does 3) There is a most current string path which the user can copy to paste in a conversation with other schedulers. It defaults as the minimal ?-{Buy counterparty}-MAG-{Sell counterparty}-? path 4) The user can paste the path string for a parser to parse. Once paste this updates the current string path  5) A parser parses the string to find the schedule (a single schedule can have split paths, so can produce multiple tags. The code should not assume one path/tag per link), the GCA, LCA, the market path (list of counterparties), the physical path (transmissions needed), the source and the sink. 6) Once the path is complete the user can generate a tag excel file (i will provide some of those later). The second workflow would apply to tags we often do and it would start like the first one by clicking a link. The the user would be able to click a 'copy latest tag' button which would fill the empty fields the parser or user hasn't filled yet from the latest tag with the same path or fields. The fiels would then fill and the user can generate the excel file. I doubt I will satisfied with native streamlit for those workflows so I suggest you do it in the same fashion the canvas and SWPW popup where done with components. I just want you to do a first version of the parser and update the popup layout when clicking a link
