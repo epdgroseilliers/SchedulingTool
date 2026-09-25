@@ -19,8 +19,9 @@ domain/       Pure business logic — no Streamlit import anywhere in this
               plain values, so it's unit-testable without AppTest.
   options.py    Option lists (COUNTERPARTIES, LOCATIONS, ...) and the
                 constants/defaults tied to them.
-  grid.py       The HE x Date grid: building it, and converting between
-                its wide (data_editor) and long (date, he, mw) shapes.
+  grid.py       The HE x Date grid: building it, converting between its
+                wide (data_editor) and long (date, he, mw) shapes, and
+                reading a column of MW pasted out of Excel.
   shapes.py     Shape parsing (HL/LL/ATC/custom range) and expanding a
                 shape into actual per-date hours via the WECC calendar.
   trade.py      Trade-level rules: price formatting, the DAM/RT date

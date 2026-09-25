@@ -51,7 +51,13 @@ schedule, and write it to the back office database.
    Shape (`HL`/`LL`/`ATC`/a custom hour range) and MW. A block
    auto-populates its grid the first time it's shown (no explicit
    "Generate" click needed for the default case); the grid is still
-   hand-editable afterward for irregular shapes.
+   hand-editable afterward for irregular shapes. For a genuinely variable
+   shape there is **Paste MW**: a column of 24 values copied straight out
+   of Excel (or 24 per date, for the dates in order), which beats typing
+   24 cells. It's all-or-nothing like the broker string — a count that
+   doesn't match is refused rather than guessed at, since 16 values could
+   be HE7-22 or HE1-16 and guessing wrong moves the energy to the wrong
+   hours.
 5. **Add Trade** — validates, and optionally (**Input in DB** checked)
    writes to `PhysiqueBilateral.west.BilateralTrades` on the
    `MAGAPPSERVER\SQLSERVER` box (a different server from the app's own
@@ -100,6 +106,15 @@ hand-edit that breaks the pattern falls back to an explicit range.
 
 ### Known gaps / things to keep in mind
 
+- **A block's editor must be seeded with a frame that doesn't move while
+  the trader types.** `st.data_editor` builds its element id from a hash of
+  the data it is handed, not from `key` alone, so feeding the previous
+  run's *edited* frame back in renames the widget after every accepted edit
+  and the next one — addressed to the old name — is dropped. That was the
+  "I have to type every value twice" bug: it skipped every other entry, not
+  every one, because the seed only moved once an edit had landed. The seed
+  and the edited result are now separate session keys (`block_grid_*` and
+  `block_edits_*`); see `ui.schedule.get_block_grid`.
 - **Option lists are seeded, not exhaustive.** `domain/options.py`'s
   `COUNTERPARTIES`/`LOCATIONS`/etc. and `data/trade_string.py`'s alias
   tables (`COUNTERPARTY_ALIASES`, `LOCATION_ALIASES`, `ACS_SOURCES`, `SS_SOURCES`, ...)

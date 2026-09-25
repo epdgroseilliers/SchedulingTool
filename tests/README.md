@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-583 tests total: all but 16 run with no network dependency beyond what
+601 tests total: all but 16 run with no network dependency beyond what
 rendering the app already needs (see below); those 16 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them.
@@ -50,7 +50,10 @@ tests/
                              runs the real app.py script
     test_layout.py           page structure: entry row, economics row order
     test_schedule_ui.py      auto-populate, IsDAM date-sync guards,
-                              Generate/Clear, block add/remove
+                              Generate/Clear, block add/remove, that a
+                              hand-typed value sticks on the *first* try
+                              (the editor's seed must not move under it),
+                              and the Paste MW popover
     test_paste_ui.py         paste -> fill -> build schedule, rejection,
                               trade-date anchoring, WSPP forms
     test_clear_button.py     the Clear button and the post-Add-Trade reset

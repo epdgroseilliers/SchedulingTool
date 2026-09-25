@@ -292,3 +292,109 @@ class TestBlockAddRemove:
     def test_single_block_has_no_remove_button(self):
         at = _run()
         assert not [b for b in at.button if b.label == "Remove block"]
+
+
+class TestHandEditsStick:
+    """The double-entry bug: every other typed value went missing.
+
+    `st.data_editor` builds its element id from a hash of the data it is
+    handed, not from `key` alone, so re-seeding it with the previous run's
+    *edited* frame renamed the widget after each accepted edit and the next
+    one — sent under the old name — was dropped. The fix is that the seed
+    stops moving while the trader types; these pin that down.
+    """
+
+    @staticmethod
+    def _editor_key(at, bid=0):
+        """The editor's widget key, rebuilt the way ui.schedule builds it.
+
+        Spelled out rather than found by scanning session_state, which
+        AppTest's wrapper doesn't support iterating. It does couple this to
+        the key's shape — if that changes, these tests say so loudly.
+        """
+        dates = [x for x in at.date_input if x.label in ("Start Date", "End Date")]
+        start, end = dates[0].value, dates[1].value
+        ver_key = f"grid_ver_{bid}"
+        ver = at.session_state[ver_key] if ver_key in at.session_state else 0
+        return f"block_editor_{bid}_{start.isoformat()}_{end.isoformat()}_{ver}"
+
+    @staticmethod
+    def _type(at, bid, row, he, value):
+        """One cell edit, the way Streamlit stores one: a diff against the
+        frame the editor was handed."""
+        # AppTest's session_state has no .get(), so membership first.
+        key = TestHandEditsStick._editor_key(at, bid)
+        state = at.session_state[key] if key in at.session_state else {}
+        edited = dict(state.get("edited_rows") or {})
+        edited[row] = {**edited.get(row, {}), str(he): float(value)}
+        at.session_state[key] = {
+            "edited_rows": edited, "added_rows": [], "deleted_rows": []
+        }
+        return at.run()
+
+    def test_the_seed_never_moves_while_values_are_typed(self):
+        # The invariant the fix rests on: what the editor is handed has to
+        # be the same on the run that renders it and the run that receives
+        # its edit, or the edit arrives addressed to a widget that no
+        # longer exists. Checked across *two* edits — one isn't enough,
+        # since the seed only moved once an edit had been accepted, which
+        # is why the bug skipped every other value rather than all of them.
+        at = _run()
+        before = at.session_state["block_grid_0"].copy()
+        for he, value in [(7, 77), (8, 88)]:
+            at = self._type(at, 0, 0, he, value)
+            assert not at.exception, [e.value for e in at.exception]
+            after = at.session_state["block_grid_0"]
+            for h in (7, 8):
+                assert after[str(h)].tolist() == before[str(h)].tolist(), (
+                    f"the seed moved after typing HE{he}"
+                )
+
+    def test_a_typed_value_reaches_the_grid(self):
+        # Asserted on the editor's *output*, not at.dataframe — AppTest
+        # exposes the frame handed *to* a widget, which here is deliberately
+        # the unmoved seed.
+        at = self._type(_run(), 0, 0, 7, 77)
+        assert at.session_state["block_edits_0"]["7"].iloc[0] == 77.0
+
+    def test_consecutive_edits_all_stick(self):
+        # The reported symptom exactly: four values typed one after
+        # another, of which only the 1st and 3rd used to survive.
+        at = _run()
+        for he, value in [(7, 11), (8, 22), (9, 33), (10, 44)]:
+            at = self._type(at, 0, 0, he, value)
+        grid = at.session_state["block_edits_0"]
+        assert [grid[str(h)].iloc[0] for h in (7, 8, 9, 10)] == [11.0, 22.0, 33.0, 44.0]
+
+    def test_generate_still_wins_over_earlier_hand_edits(self):
+        # The edits key is rewritten on every render, so the check is that
+        # it no longer holds the hand edit — not that it's gone.
+        at = self._type(_run(), 0, 0, 7, 77)
+        [b for b in at.button if b.label == "Generate"][0].click().run()
+        assert at.session_state["block_edits_0"]["7"].iloc[0] != 77.0
+        assert (
+            at.session_state["block_edits_0"]["7"].iloc[0]
+            == at.session_state["block_grid_0"]["7"].iloc[0]
+        )
+
+
+class TestPasteAScheduleIn:
+    def test_a_pasted_column_fills_the_grid(self):
+        shape = [16, 19, 21, 21, 22, 21, 19, 15, 12, 9, 9, 10,
+                 13, 18, 24, 32, 40, 40, 40, 40, 40, 40, 40, 40]
+        at = _run()
+        at.session_state["paste_sched_0"] = "\n".join(str(v) for v in shape)
+        at.run()
+        [b for b in at.button if b.label == "Apply"][0].click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        row = at.dataframe[0].value.iloc[0]
+        assert [row[str(h)] for h in range(1, 25)] == [float(v) for v in shape]
+
+    def test_a_bad_paste_reports_and_changes_nothing(self):
+        at = _run()
+        before = at.dataframe[0].value.copy()
+        at.session_state["paste_sched_0"] = "16\n19\nbanana"
+        at.run()
+        [b for b in at.button if b.label == "Apply"][0].click().run()
+        assert any("banana" in e.value for e in at.error)
+        assert at.dataframe[0].value["7"].tolist() == before["7"].tolist()

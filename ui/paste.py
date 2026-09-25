@@ -73,7 +73,7 @@ def apply_parsed_string(text):
     st.session_state.block_ids = [0]
     for key in [
         k for k in st.session_state
-        if k.startswith(("block_grid_", "grid_ver_", "block_editor_"))
+        if k.startswith(("block_grid_", "block_edits_", "grid_ver_", "block_editor_"))
     ]:
         del st.session_state[key]
 

@@ -10,11 +10,13 @@ from domain.grid import (
     as_date,
     block_grid_to_date_frames,
     dates_in_range,
+    parse_pasted_schedule,
     make_block_grid,
 )
 from domain.shapes import generate_block_grid, shape_to_he
 from ui.session import (
     block_date_defaults,
+    block_edits_key,
     block_grid_key,
     dates_last_default_keys,
     get_version,
@@ -26,20 +28,40 @@ DATE_EDITOR_ROW_HEIGHT = 20
 
 
 def get_block_grid(bid, dates, shape, mw):
-    """Session-state grid for a block, reconciled to `dates`: rows for dates
-    this block has already held keep their values (hand edits included);
-    rows for dates no longer in range are dropped; genuinely new dates —
-    never held by this block before, whether this is its very first render
-    or its range was just widened — are seeded via Shape/MW against the
-    WECC calendar, the same as clicking Generate would give for just that
-    date, rather than left at zero MW.
+    """The frame to seed a block's editor with, reconciled to `dates`.
+
+    **The same frame is handed back unchanged while the trader is typing,
+    and that is load-bearing.** `st.data_editor` builds its element id from
+    a hash of the data it is given, not from `key` alone
+    (`streamlit/elements/widgets/data_editor.py`: `compute_and_register_
+    element_id(..., key_as_main_identity=False, data=arrow_bytes, ...)`).
+    So re-seeding it with the previous run's *edited* frame renamed the
+    widget after every accepted edit, and the next edit — sent by a browser
+    that still knew the old name — was dropped on arrival. The symptom was
+    every other keystroke going missing: type, nothing; type again, it
+    sticks. The editor's own accumulated diff is what carries edits between
+    runs; this only has to stop moving underneath it.
+
+    A genuine change of dates does rebuild it: rows for dates this block has
+    already held keep their values (hand edits included, which is what
+    block_edits_key is for); rows for dates no longer in range are dropped;
+    genuinely new dates are seeded via Shape/MW against the WECC calendar,
+    the same as clicking Generate would give for just that date, rather than
+    left at zero MW. Rebuilding then is safe — the editor's key carries the
+    date range, so it is a new widget with no edits to lose anyway.
 
     Silent on a calendar failure for those new dates (falls back to
     all-zero): this runs on every render, and a WECC calendar hiccup here
     shouldn't block the page — clicking Generate explicitly still surfaces
     the error.
     """
-    existing = st.session_state.get(block_grid_key(bid))
+    seed = st.session_state.get(block_grid_key(bid))
+    if seed is not None and [as_date(d) for d in seed["Date"]] == list(dates):
+        return seed
+
+    # The dates moved (or this is the first render): rebuild, preferring
+    # what the trader has actually typed over the untouched seed.
+    existing = st.session_state.get(block_edits_key(bid), seed)
     mw_by_date = {}
     if existing is not None:
         for _, row in existing.iterrows():
@@ -94,6 +116,47 @@ def sync_block_dates(bid, default_start, default_end):
     st.session_state[last_end_key] = default_end
 
 
+def _render_paste_schedule(bid, block_dates, ver):
+    """The "Paste MW" popover: a column of numbers straight out of Excel.
+
+    Kept behind a popover because it's the exception, not the rule — most
+    trades are a shape and an MW, and this is for the ones that aren't.
+    Applying it replaces the whole block, exactly as Generate does (same
+    seed/edits/version bookkeeping), so the editor is rebuilt around the
+    pasted numbers rather than trying to merge them into what's there.
+    """
+    expected = len(HOURS) * len(block_dates)
+    with st.popover("Paste MW", width="stretch"):
+        st.caption(
+            f"A column of MW copied from Excel — {len(HOURS)} values, one per "
+            "hour ending"
+            + (
+                f", used on each of the {len(block_dates)} dates; or "
+                f"{expected} for the dates in order."
+                if len(block_dates) > 1
+                else "."
+            )
+        )
+        text = st.text_area(
+            "MW values",
+            key=f"paste_sched_{bid}",
+            height=160,
+            label_visibility="collapsed",
+            placeholder="16\n19\n21\n21\n…",
+        )
+        if st.button("Apply", key=f"apply_paste_{bid}", type="primary", width="stretch"):
+            mw_by_date, error = parse_pasted_schedule(text, block_dates)
+            if error:
+                st.error(error)
+            else:
+                st.session_state[block_grid_key(bid)] = make_block_grid(
+                    block_dates, mw_by_date
+                )
+                st.session_state.pop(block_edits_key(bid), None)
+                st.session_state[version_key(bid)] = ver + 1
+                st.rerun()
+
+
 def render_schedule_section(trade_date, is_dam, is_monthly=False):
     """Render every block in st.session_state.block_ids.
 
@@ -123,11 +186,16 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
     for bid in st.session_state.block_ids:
         with st.container(border=True):
             specs = [1.1, 1.1, 1.5, 0.7, 0.9, 1.1]
+            if not is_monthly:
+                specs.append(0.8)  # the paste-a-schedule popover
             show_remove = len(st.session_state.block_ids) > 1
             if show_remove:
                 specs.append(1.0)
             row = st.columns(specs, vertical_alignment="bottom")
             dcol1, dcol2, gcol1, gcol2, gcol3, gcol4 = row[:6]
+            # Filled in further down, once the block's dates are known.
+            pcol = None if is_monthly else row[6]
+            remove_col = row[-1] if show_remove else None
 
             # sync_block_dates may just have written today's default straight
             # into session_state; passing `value=` as well on that same call
@@ -162,7 +230,7 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
 
             if is_monthly:
                 remove_clicked = (
-                    row[6].button("Remove block", key=f"remove_{bid}", width="stretch")
+                    remove_col.button("Remove block", key=f"remove_{bid}", width="stretch")
                     if show_remove else False
                 )
                 if remove_clicked:
@@ -190,13 +258,14 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                 "Clear schedule", key=f"clear_{bid}", type="primary", width="stretch"
             )
             remove_clicked = (
-                row[6].button("Remove block", key=f"remove_{bid}", width="stretch")
+                remove_col.button("Remove block", key=f"remove_{bid}", width="stretch")
                 if show_remove else False
             )
 
             if remove_clicked:
                 st.session_state.block_ids.remove(bid)
                 st.session_state.pop(block_grid_key(bid), None)
+                st.session_state.pop(block_edits_key(bid), None)
                 st.session_state.pop(version_key(bid), None)
                 st.rerun()
 
@@ -215,6 +284,11 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                 )
                 continue
 
+            # Filled now rather than with the rest of the row, because it
+            # needs the block's dates to know how many values to expect.
+            with pcol:
+                _render_paste_schedule(bid, block_dates, ver)
+
             if generate_clicked:
                 grid, excluded, missing, error = generate_block_grid(
                     start_date, end_date, block_dates, shape, mw
@@ -223,6 +297,7 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                     st.error(error)
                 else:
                     st.session_state[block_grid_key(bid)] = grid
+                    st.session_state.pop(block_edits_key(bid), None)
                     st.session_state[version_key(bid)] = ver + 1
                     if excluded:
                         st.toast(
@@ -239,6 +314,7 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                     st.rerun()
             if clear_clicked:
                 st.session_state[block_grid_key(bid)] = make_block_grid(block_dates)
+                st.session_state.pop(block_edits_key(bid), None)
                 st.session_state[version_key(bid)] = ver + 1
                 st.rerun()
 
@@ -265,7 +341,9 @@ def render_schedule_section(trade_date, is_dam, is_monthly=False):
                 height="content",
                 row_height=DATE_EDITOR_ROW_HEIGHT,
             )
-            st.session_state[block_grid_key(bid)] = edited
+            # Deliberately *not* block_grid_key: feeding this back as the
+            # editor's data renames the widget and loses the next edit.
+            st.session_state[block_edits_key(bid)] = edited
             block_grids[bid] = block_grid_to_date_frames(edited)
 
     return block_grids, block_ranges, block_shapes, block_mws

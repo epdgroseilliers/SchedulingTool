@@ -71,7 +71,25 @@ def flush_flash():
 
 
 def block_grid_key(bid):
+    """The frame a block's editor is *seeded* with.
+
+    Deliberately not the same thing as what the trader has typed into it —
+    see block_edits_key, and ui.schedule.get_block_grid for why the two
+    have to be kept apart.
+    """
     return f"block_grid_{bid}"
+
+
+def block_edits_key(bid):
+    """The block's grid as it stands *including* hand edits.
+
+    `st.data_editor` folds its own accumulated edits into what it returns,
+    so this is that return value — kept only so a later date-range change
+    can rebuild the seed without losing typed MW. It must never be fed
+    back to the editor as its data: that changes the editor's identity and
+    throws the next edit away (again, see get_block_grid).
+    """
+    return f"block_edits_{bid}"
 
 
 def version_key(bid):
@@ -172,6 +190,7 @@ def reset_trade_fields():
     default_start, default_end = block_date_defaults(trade_date, is_dam)
     for bid in st.session_state.block_ids:
         st.session_state.pop(block_grid_key(bid), None)
+        st.session_state.pop(block_edits_key(bid), None)
         st.session_state.pop(version_key(bid), None)
         st.session_state[f"shape_{bid}"] = "HL"
         st.session_state[f"mw_{bid}"] = 25
