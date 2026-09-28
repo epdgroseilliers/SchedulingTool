@@ -23,6 +23,7 @@ from ui.scheduling.state import (
     remove_link,
     update_link,
 )
+from ui.scheduling.tag import render_tag
 from ui.scheduling.widgets import hours_editor as _hours_editor
 
 
@@ -62,6 +63,7 @@ def render_popup(legs, links, flow_date):
             without_this = [ln for ln in links if ln.link_id != link.link_id]
             start_from = dict(link.mw_by_hour)
         else:
+            link = None
             buy = leg_or_market(pending["buy_key"], legs, flow_date)
             sell = leg_or_market(pending["sell_key"], legs, flow_date)
             without_this = links
@@ -77,24 +79,41 @@ def render_popup(legs, links, flow_date):
         st.markdown(_side_line(buy, without_this, "Buy"))
         st.markdown(_side_line(sell, without_this, "Sell"))
 
-        if start_from is None:
-            start_from = suggest_allocation(buy, sell, without_this)
-            if start_from:
-                st.caption(
-                    "Suggested: every hour both sides still have open, at the "
-                    "smaller of the two remaining MW. Overwrite any hour."
+        # Two jobs, one popup: the hours are the link, the tag is what the
+        # link becomes. Tabs rather than one long form — a trader confirming
+        # an allocation isn't tagging yet, and a trader tagging has already
+        # settled the hours.
+        schedule_tab, tag_tab = st.tabs(["Schedule", "Tag"])
+
+        with schedule_tab:
+            if start_from is None:
+                start_from = suggest_allocation(buy, sell, without_this)
+                if start_from:
+                    st.caption(
+                        "Suggested: every hour both sides still have open, at "
+                        "the smaller of the two remaining MW. Overwrite any "
+                        "hour."
+                    )
+                else:
+                    st.warning(
+                        "No open hour in common — every hour these two share "
+                        "is already allocated elsewhere. Type the hours you "
+                        "want, or cancel."
+                    )
+
+            allocation = _hours_editor(
+                start_from, flow_date, key=f"mv_alloc_{editing or 'new'}"
+            )
+            st.caption(f"{sum(allocation.values()):,.0f} MWh on this link")
+
+        with tag_tab:
+            if link is None:
+                st.info(
+                    "Create the link first — its tag opens when you click it "
+                    "on the board."
                 )
             else:
-                st.warning(
-                    "No open hour in common — every hour these two share is "
-                    "already allocated elsewhere. Type the hours you want, or "
-                    "cancel."
-                )
-
-        allocation = _hours_editor(
-            start_from, flow_date, key=f"mv_alloc_{editing or 'new'}"
-        )
-        st.caption(f"{sum(allocation.values()):,.0f} MWh on this link")
+                render_tag(link, buy, sell)
 
         cols = st.columns([1, 1, 1, 3])
         if cols[0].button(

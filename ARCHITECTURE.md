@@ -33,6 +33,10 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 and the open-position arithmetic over it. A link belongs to
                 one flow date (links_on): a leg's key doesn't carry one, so
                 without that a multi-day trade's days share one link.
+  tags.py       Phase 3: the bilateral e-Tag a link turns into — its
+                fields, the PSE chain a link implies (generator, MAG,
+                load), what must be filled in before one can be written,
+                and how the desk names its files and day folders.
   bidfiles.py   Phase 2: grouping a market's links by counterparty into
                 SHORT/LONG bid lines, validating a trader's split of one
                 into more than one GCA/LCA, and rebalancing the rest of a
@@ -63,7 +67,7 @@ ui/           Streamlit rendering, one module per page section. Each
   scheduling/    The Scheduling View's own sections — a package rather than
                  one module because it's a second page, not another band of
                  the first.
-    state.py       Its session state (links and hidden squares are
+    state.py       Its session state (links, hidden squares and tags are
                    session-only) and assembling a flow date's legs from the
                    DB + this session's trades. Also propagate_link, which
                    gives every other day the two trades share its own
@@ -83,6 +87,9 @@ ui/           Streamlit rendering, one module per page section. Each
                    written per day. It also sizes the modal, since Python is
                    the only side that knows how many columns there will be
                    before the grid is drawn.
+    tag.py         The popup's Tag tab: the path fields a tag needs that
+                   the board can't know, and Generate. The link supplies
+                   the schedule; nothing here asks for it.
     widgets.py     The one-row, HE1..HE24 hour editor — the link schedule
                    popup's (links.py). The bid-file builder has its own
                    component.
@@ -106,6 +113,11 @@ data/         External state: the database and the WECC calendar. Nothing
   matching.py    The read side of BilateralTrades: what's on the book for
                  one flow date. Separate from bilateral.py's write side on
                  purpose — a read path has no business importing the insert.
+  tagfiles/      Writing the desk's e-Tag workbooks. bilateral.py fills a
+                 blank copy of the desk's own template (the .xlsx beside
+                 it) rather than building one from scratch — unlike a bid
+                 file, every real tag file puts the same label in the same
+                 cell. See PROJECT.md for the row map.
   bidfiles/      Writing the desk's downstream market bid files — one
                  module per market, since each has its own real spreadsheet
                  format. swpw.py is the first; see PROJECT.md for what's

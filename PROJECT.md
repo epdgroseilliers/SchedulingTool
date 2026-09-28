@@ -650,3 +650,96 @@ never goes away.
   plain values) is a pattern worth carrying into Phase 2's page rather than
   inventing a new convention — unless the custom-component path is chosen,
   in which case the component itself sits outside that split entirely.
+
+## Phase 3 — the bilateral tag (v1 built)
+
+A link is a decision about which buy covers which sale. A **tag** is the
+paperwork that makes it flow: the control areas, the PSE chain, the
+transmission reservations and who gets a copy. Clicking a link opens the
+same popup as before, now with two tabs — **Schedule** (the hours, as
+before) and **Tag**.
+
+The scope of this first version is deliberately small: type the path, press
+Generate. The e-Tag path strings the desk exchanges on ICE chat
+(`HE1-6; Mead MAG (G @ SWPW) (SWPP tx CRSP>PNPK, 2nh TBD) - MAG - EEMU -
+TNSK - MGM sink`) are **not** parsed yet — that needs the corpus of
+string-to-tag examples still to be assembled, and a wrong parse of a path
+is a tag that flows the wrong energy. Nor is "copy the latest tag with this
+path". Both are still on the TODO.
+
+### What the link fills in, and what it doesn't
+
+Filled in, because the board already knows it: the flow date, the schedule
+(hour by hour, straight off the link — both halves of the sheet carry the
+same one), each end's market, a tag name (`ABEX-BPAT`), and a market path
+of *generator, MAG, load* with `G-F` on the first row and `L` on the last.
+
+Left blank, because nothing on the board knows it: GCA, LCA, the source and
+sink points, PSE codes, contracts, transmission reservations, carbon
+copies. The market path's ends start as the counterparty's **trading** name
+(ABEX, EPE), which is often not its PSE code (RRWE01, EPEC01) — the app has
+no lookup between the two, so those are a starting point to correct, not an
+answer. A tag that guessed here would be one a scheduler has to check
+rather than fill.
+
+Only the GCA, the LCA and a two-ended market path are required. Everything
+else is legitimately blank in the desk's own files, and whether the numbers
+are *right* is the scheduler's call, not the app's.
+
+### The file
+
+`data/tagfiles/bilateral.py` fills a **blank copy of the desk's own
+template** (`bilateral_tag_template.xlsx`, beside it — the Templates
+folder's `SWPW-SWPP` file with every input cell emptied), rather than
+building a workbook from scratch the way the SWPW bid file does. The
+difference is that the tag layout is genuinely fixed: all 2,638 real tag
+files under `Y:\West\TAG Bilateral WEST` put the same label in the same
+cell, so the row map below is read off the whole set, not off one example.
+
+    C5  flow date        D5  header line ("SOURCE-SWPW(WAUW)")
+    D7-D12   Market / GCA  / Source / PSE / comment / contract
+    D44-D49  Market / LCA  / Sink   / PSE / comment / contract
+    rows 14-37 + 38-40   MW, source half   (EPT HE1-24, then the stars)
+    rows 51-74 + 75-77   MW, sink half
+    rows 80-92   Path / # trans / MW
+    rows 94-103  Market Path Product: PSE / Product / Contract
+    rows 105-112 Carbon Copy: Type / Market
+
+The Carbon Copy block is the one part that isn't universal — it's absent
+from the older files — which is why `folder_covers` and the row map treat
+its rows as optional.
+
+**Hours are EPT here too.** Same +3 as the SWPW bid file, same `1*`/`2*`/`3*`
+rows for the last three hours of a PPT day — see *Hours are EPT, the app is
+PPT*, above. Confirmed twice against the desk's files: a tag named
+"… TEPC HE7-14" fills rows 23-30 (EPT HE10-17), and a full-day position
+fills EPT HE4-24 plus the three stars.
+
+**Where it lands.** `TEST_MODE = True` while this is under review, so every
+generated tag goes to `…\TAG Bilateral WEST\Test\` and nothing can be
+mistaken for a real tag. Live, it files under the day's own folder — the
+existing one if there is one, since the desk pairs days ("25-26 September
+2026") by a judgement about the trading session that the app shouldn't
+invent. Generating over an existing file needs the Overwrite tick: two tags
+on one day sharing a name is far more likely to be a second leg needing its
+own name.
+
+### Watch out for
+
+- **A data editor's seed can't be its own output.** The three list tables
+  (market path, carbon copy, transmission) hit exactly the trap the
+  schedule grid did: `st.data_editor` derives its element id from a hash of
+  the data it's handed, so re-seeding from the edited frame drops the next
+  edit. Each table's seed is rebuilt only when the editor's own state is
+  missing — see `ui/scheduling/tag.py`.
+- **The tag lives in `mv_tags`, not in the widgets.** Streamlit discards
+  widget state on any run that doesn't render the widget, and a closed
+  dialog renders none of these, so every field is copied into the tag dict
+  as it's read and the widgets re-seed from it. That round trip can't be
+  tested through AppTest (it reads the previous run's widget tree, so a
+  widget that legitimately vanished makes the next run raise); it was
+  checked in the browser instead.
+- **A container, not `st`.** A data editor written to the bare `st` while a
+  column is open lands *under* the columns at full width — which is how the
+  market path and the carbon copy first came out stacked instead of side by
+  side.

@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-601 tests total: all but 16 run with no network dependency beyond what
+682 tests total: all but 16 run with no network dependency beyond what
 rendering the app already needs (see below); those 16 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them.
@@ -29,6 +29,9 @@ tests/
     test_bidfiles.py        Phase 2: grouping a market's links by
                              counterparty into SHORT/LONG, and validating a
                              trader's split of one — pure, no filesystem
+    test_tags.py            Phase 3: the PSE chain a link implies, what
+                             stops a tag being written, and how the desk
+                             names its tag files and day folders
   data/
     test_trade_string.py    the broker-string parser — pure, the most
                              heavily-exercised code in the app
@@ -46,6 +49,11 @@ tests/
     test_swpw_bid.py        the SWPW bid file writer — filename convention,
                              workbook structure, the overwrite guard. Every
                              save goes to tmp_path via monkeypatch; never Z:\
+    test_tagfile.py         the bilateral tag writer: every cell reference
+                             read off the desk's own files, the EPT hour
+                             shift, which day folder a tag lands in, and
+                             that the template is never written to. Every
+                             save goes to tmp_path; never Y:\West
   ui/                       exercised through streamlit.testing.v1.AppTest —
                              runs the real app.py script
     test_layout.py           page structure: entry row, economics row order
@@ -83,6 +91,13 @@ tests/
                               width) and what it makes of each event
                               (rebalancing a split, dropping one, the replay
                               guard)
+    test_tag_popup.py        the Tag tab of the link popup: that clicking
+                              a link opens a tag seeded from it, what the
+                              trader types reaching the tag (including the
+                              tables, whose seeds must not move), and
+                              generating — the validation gate, the
+                              overwrite gate, a failed write. Every file
+                              goes to tmp_path; never Y:\West
     test_multiday_links.py   a trade spanning several flow dates: one link
                               per day, created on every day both trades
                               flow *later in the session being traded* —

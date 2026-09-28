@@ -28,6 +28,7 @@ from domain.matching import (
     parse_market_key,
     suggest_allocation,
 )
+from domain.tags import default_tag
 from domain.trade import session_horizon
 
 SOURCE_DB = "Database"
@@ -130,6 +131,12 @@ def init_matching_state():
     # file is written per day — see bidfile_splits_for.
     if "mv_bidfile_splits" not in st.session_state:
         st.session_state.mv_bidfile_splits = {}
+    # {link_id: tag} for every link a tag has been started on — see
+    # domain.tags for the shape and ui.scheduling.tag for the form. Session
+    # -only like the links themselves: a tag's permanent record is the
+    # workbook it generates, not anything held here.
+    if "mv_tags" not in st.session_state:
+        st.session_state.mv_tags = {}
     # The other flow dates the last confirmed link also linked, so the page
     # can say so once — see propagate_link.
     if "mv_propagated" not in st.session_state:
@@ -527,6 +534,7 @@ def remove_link(link_id):
     st.session_state.mv_links = [
         ln for ln in st.session_state.mv_links if ln.link_id != link_id
     ]
+    forget_tag(link_id)
 
 
 def find_link(link_id):
@@ -534,6 +542,43 @@ def find_link(link_id):
         if ln.link_id == link_id:
             return ln
     return None
+
+
+# ----------------------------------------------------------------- tagging
+
+
+def tag_for(link_id):
+    """The tag being built on this link, or None if it hasn't been opened
+    yet."""
+    return st.session_state.mv_tags.get(link_id)
+
+
+def ensure_tag(link, buy_leg, sell_leg):
+    """This link's tag, raised from the link the first time it's asked for.
+
+    The schedule is refreshed from the link on every call, not just on the
+    first: the popup that edits a link's hours is the same one that holds
+    its tag, so a tag showing yesterday's allocation would be a tag the
+    trader has already been shown a reason to trust.
+    """
+    tag = st.session_state.mv_tags.get(link.link_id)
+    if tag is None:
+        tag = default_tag(buy_leg, sell_leg, link.mw_by_hour, link.flow_date)
+        st.session_state.mv_tags[link.link_id] = tag
+    else:
+        tag["mw_by_hour"] = dict(link.mw_by_hour)
+        tag["flow_date"] = link.flow_date
+    return tag
+
+
+def forget_tag(link_id):
+    """Drop a tag and the data editors' seeds with it — see
+    ui.scheduling.tag for what those are and why they can't simply be
+    rebuilt from the tag on every run."""
+    st.session_state.mv_tags.pop(link_id, None)
+    prefix = f"mv_tag_{link_id}_"
+    for key in [k for k in list(st.session_state) if str(k).startswith(prefix)]:
+        st.session_state.pop(key, None)
 
 
 # ---------------------------------------------------------- bid file popup
@@ -595,10 +640,12 @@ __all__ = [
     "FLOW_DATE_MEMORY",
     "default_flow_date",
     "dialog_was_dismissed",
+    "ensure_tag",
     "commit_link",
     "find_link",
     "flow_date_is_peak",
     "focused_key",
+    "forget_tag",
     "hide_leg",
     "highlighted_keys",
     "init_matching_state",
@@ -617,6 +664,7 @@ __all__ = [
     "start_link",
     "start_link_edit",
     "store_positions",
+    "tag_for",
     "take_propagated",
     "update_link",
     "visible_legs",

@@ -1,0 +1,1 @@
+SELECT * FROM MAG.dbo.OATI_TagMS
