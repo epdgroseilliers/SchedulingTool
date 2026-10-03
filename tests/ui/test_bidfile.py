@@ -16,6 +16,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import data.bidfiles.swpw as swpw
+from dialog_helpers import let_go_of_closed_widgets
 from domain.bidfiles import LONG, SHORT
 from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG
 
@@ -73,7 +74,9 @@ def _emit(at, event, seq=None):
 
 def _click(at, label):
     [b for b in _in_dialog(at).button if b.label == label][0].click().run()
-    return at
+    # The link popup now carries the tag fields; closing it takes them with
+    # it, which AppTest needs help with. See dialog_helpers.
+    return let_go_of_closed_widgets(at)
 
 def _in_dialog(at):
     """Tell the page its modal is still open.

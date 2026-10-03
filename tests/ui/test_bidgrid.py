@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from dialog_helpers import let_go_of_closed_widgets
+
 from domain.bidfiles import LONG, SHORT
 from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG
 from ui.scheduling.bidgrid import (
@@ -171,6 +173,7 @@ def _open_grid(trades=(BUY_LEG,)):
     at.run()
     at = _board(at, {"type": "link_request", "from": "session:0", "market": "SWPW"})
     [b for b in _in_dialog(at).button if b.label == "Create link"][0].click().run()
+    let_go_of_closed_widgets(at)
     return _board(at, {"type": "chip_click", "market": "SWPW"})
 
 

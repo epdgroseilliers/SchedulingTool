@@ -30,11 +30,11 @@ def a_tag(**over):
     tag["name"] = "ABEX-SWPW"
     tag["label"] = "SOURCE-SWPW(WAUW)"
     tag["source"].update(
-        {"market": "ABEX", "gca": "GWA", "point": "RIMROCK", "pse": "RRWE01",
+        {"market": "ABEX", "gca": "GWA", "point": "RIMROCK",
          "comment": "call first", "contract": "WSPP"}
     )
     tag["sink"].update(
-        {"market": "SPP", "lca": "SWPW", "point": "SINKNODE", "pse": "MAG001",
+        {"market": "SPP", "lca": "SWPW", "point": "SINKNODE",
          "comment": "", "contract": ""}
     )
     tag["market_path"] = [
@@ -67,15 +67,47 @@ class TestTheHeaderAndTheTwoHalves:
 
     def test_the_source_half(self):
         ws = sheet(a_tag())
-        assert [ws[c].value for c in ("D7", "D8", "D9", "D10", "D11", "D12")] == [
-            "ABEX", "GWA", "RIMROCK", "RRWE01", "call first", "WSPP"
+        assert [ws[c].value for c in ("D7", "D8", "D9", "D11", "D12")] == [
+            "ABEX", "GWA", "RIMROCK", "call first", "WSPP"
         ]
 
     def test_the_sink_half(self):
         ws = sheet(a_tag())
-        assert [ws[c].value for c in ("D44", "D45", "D46", "D47")] == [
-            "SPP", "SWPW", "SINKNODE", "MAG001"
+        assert [ws[c].value for c in ("D44", "D45", "D46")] == [
+            "SPP", "SWPW", "SINKNODE"
         ]
+
+
+class TestTheTwoPseCellsComeFromTheMarketPath:
+    """Nobody types D10 or D47 — they are the market path's own ends, which
+    is what the desk's own files hold: the ABEX-SWPW tag's D10 is RRWE01,
+    the head of its chain, not the ABEX in the Market cell above it."""
+
+    def test_the_source_pse_is_the_head_of_the_chain(self):
+        assert sheet(a_tag())["D10"].value == "RRWE01"
+
+    def test_a_mag_end_leaves_the_cell_blank(self):
+        # The chain ends MAG001, as it does whenever MAG sinks into a
+        # market, and the real files leave D47 empty there.
+        assert sheet(a_tag())["D47"].value is None
+
+    def test_a_counterparty_at_the_sink_end_is_written(self):
+        tag = a_tag(market_path=[
+            {"pse": "RRWE01", "product": "G-F", "contract": ""},
+            {"pse": "MAG001", "product": "", "contract": ""},
+            {"pse": "BPAP01", "product": "L", "contract": ""},
+        ])
+        ws = sheet(tag)
+        assert (ws["D10"].value, ws["D47"].value) == ("RRWE01", "BPAP01")
+
+    def test_editing_the_path_moves_the_cell_with_it(self):
+        # The point of deriving them: the two can't drift apart.
+        tag = a_tag(market_path=[
+            {"pse": "APS01", "product": "G-F", "contract": ""},
+            {"pse": "EPEC01", "product": "L", "contract": ""},
+        ])
+        ws = sheet(tag)
+        assert (ws["D10"].value, ws["D47"].value) == ("APS01", "EPEC01")
 
     def test_a_blank_field_is_left_blank_not_written_as_empty(self):
         ws = sheet(a_tag())

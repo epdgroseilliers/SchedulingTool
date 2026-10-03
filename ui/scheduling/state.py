@@ -15,6 +15,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 from data.calendar import is_peak_map, sessions_near
+from data.markets import pse_for_market
 from data.matching import load_trades_for_flow_date
 from domain.matching import (
     Link,
@@ -131,10 +132,11 @@ def init_matching_state():
     # file is written per day — see bidfile_splits_for.
     if "mv_bidfile_splits" not in st.session_state:
         st.session_state.mv_bidfile_splits = {}
-    # {link_id: tag} for every link a tag has been started on — see
-    # domain.tags for the shape and ui.scheduling.tag for the form. Session
-    # -only like the links themselves: a tag's permanent record is the
-    # workbook it generates, not anything held here.
+    # {link_id: tag} for every link a tag has been started on, plus
+    # PENDING_TAG for one whose link isn't created yet — see domain.tags for
+    # the shape and ui.scheduling.tag for the form. Session-only like the
+    # links themselves: a tag's permanent record is the workbook it
+    # generates, not anything held here.
     if "mv_tags" not in st.session_state:
         st.session_state.mv_tags = {}
     # The other flow dates the last confirmed link also linked, so the page
@@ -317,6 +319,7 @@ def start_link(buy_key, sell_key):
     link isn't created until they confirm it."""
     st.session_state.mv_pending = {"buy_key": buy_key, "sell_key": sell_key}
     st.session_state.mv_editing = None
+    clear_tag_widgets()
     st.session_state.mv_bidfile_market = None  # only one dialog at a time
     arm_dialog(LINK_DIALOG)
 
@@ -326,13 +329,22 @@ def start_link_edit(link_id):
     Delete alongside Save."""
     st.session_state.mv_editing = link_id
     st.session_state.mv_pending = None
+    clear_tag_widgets()
     st.session_state.mv_bidfile_market = None  # only one dialog at a time
     arm_dialog(LINK_DIALOG)
 
 
-def close_popup():
+def close_popup(keep_pending_tag=False):
+    """Shut the link popup.
+
+    A tag started on a link that was never created goes with it, or the next
+    link drawn would open holding someone else's path. `keep_pending_tag` is
+    for the one caller that is about to adopt it — commit_link.
+    """
     st.session_state.mv_pending = None
     st.session_state.mv_editing = None
+    if not keep_pending_tag:
+        forget_tag(PENDING_TAG)
 
 
 def market_leg(market, direction, flow_date, legs):
@@ -381,10 +393,12 @@ def commit_link(buy_leg, sell_leg, mw_by_hour):
     """Create the link and close the popup. Returns the new Link, or None
     when the allocation is empty (every hour zeroed out), which is a cancel
     in all but name."""
-    close_popup()
+    close_popup(keep_pending_tag=True)
     link = _new_link(buy_leg, sell_leg, mw_by_hour)
     if link is None:
         return None
+    # Anything typed into the tag before the link existed belongs to it now.
+    rename_tag(PENDING_TAG, link.link_id)
     st.session_state.mv_propagated = propagate_link(buy_leg, sell_leg)
     return link
 
@@ -547,37 +561,81 @@ def find_link(link_id):
 # ----------------------------------------------------------------- tagging
 
 
-def tag_for(link_id):
-    """The tag being built on this link, or None if it hasn't been opened
+#: What a tag is filed under before its link exists. The schedule and the
+#: tag are one popup now, so a trader drawing a link can fill the path in
+#: before pressing Create link — and there is no link_id to key it by until
+#: they do.
+PENDING_TAG = "pending"
+
+
+def tag_for(tag_key):
+    """The tag being built under this key, or None if it hasn't been opened
     yet."""
-    return st.session_state.mv_tags.get(link_id)
+    return st.session_state.mv_tags.get(tag_key)
 
 
-def ensure_tag(link, buy_leg, sell_leg):
-    """This link's tag, raised from the link the first time it's asked for.
+def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
+    """The tag under this key, raised from the link the first time it's
+    asked for.
 
-    The schedule is refreshed from the link on every call, not just on the
-    first: the popup that edits a link's hours is the same one that holds
-    its tag, so a tag showing yesterday's allocation would be a tag the
-    trader has already been shown a reason to trust.
+    Keyed rather than taking a Link, so a link still being drawn can have
+    one under PENDING_TAG — see rename_tag.
+
+    The schedule is refreshed on every call, not just on the first: one
+    popup holds both the hours and the tag, so a tag showing an allocation
+    the trader has already changed on screen would be a tag they have been
+    given a reason to distrust.
     """
-    tag = st.session_state.mv_tags.get(link.link_id)
+    tag = st.session_state.mv_tags.get(tag_key)
     if tag is None:
-        tag = default_tag(buy_leg, sell_leg, link.mw_by_hour, link.flow_date)
-        st.session_state.mv_tags[link.link_id] = tag
+        tag = default_tag(
+            buy_leg, sell_leg, mw_by_hour, flow_date, pse_for=pse_for_market
+        )
+        st.session_state.mv_tags[tag_key] = tag
     else:
-        tag["mw_by_hour"] = dict(link.mw_by_hour)
-        tag["flow_date"] = link.flow_date
+        tag["mw_by_hour"] = {int(h): float(mw) for h, mw in mw_by_hour.items()}
+        tag["flow_date"] = flow_date
     return tag
 
 
-def forget_tag(link_id):
-    """Drop a tag and the data editors' seeds with it — see
-    ui.scheduling.tag for what those are and why they can't simply be
-    rebuilt from the tag on every run."""
-    st.session_state.mv_tags.pop(link_id, None)
-    prefix = f"mv_tag_{link_id}_"
-    for key in [k for k in list(st.session_state) if str(k).startswith(prefix)]:
+def rename_tag(old_key, new_key):
+    """Move a tag onto its link once that link exists.
+
+    Only the dict moves. The widgets keep the old key in their names and are
+    dropped when the popup next opens (clear_tag_widgets) — not now, while
+    they are still on screen. Nothing is lost either way: every field is
+    copied into the tag as it's typed, so the next run re-seeds them from it
+    under the new names.
+    """
+    tag = st.session_state.mv_tags.pop(old_key, None)
+    if tag is None:
+        return None
+    st.session_state.mv_tags[new_key] = tag
+    return tag
+
+
+def forget_tag(tag_key):
+    """Drop a tag. The widgets that were showing it are left alone — see
+    clear_tag_widgets for why that has to wait."""
+    st.session_state.mv_tags.pop(tag_key, None)
+
+
+def clear_tag_widgets():
+    """Drop every tag field's widget state, and the data editors' seeds with
+    them, so the form re-seeds from whichever tag is opened next.
+
+    **Only ever called as a popup opens**, before any of those widgets have
+    rendered this run. Doing it at the other end — when a tag is renamed,
+    deleted or its popup closed — deletes the state of widgets that are
+    still on screen for the rest of that run, which is both a Streamlit
+    policy violation and, in AppTest, an unreadable widget tree on the
+    following run.
+
+    One form is on screen at a time, so clearing the lot is simpler than
+    tracking which tag's widgets these were, and can't leave a previous
+    link's typing in the next one's boxes.
+    """
+    for key in [k for k in list(st.session_state) if str(k).startswith("mv_tag_")]:
         st.session_state.pop(key, None)
 
 
@@ -641,10 +699,12 @@ __all__ = [
     "default_flow_date",
     "dialog_was_dismissed",
     "ensure_tag",
+    "PENDING_TAG",
     "commit_link",
     "find_link",
     "flow_date_is_peak",
     "focused_key",
+    "clear_tag_widgets",
     "forget_tag",
     "hide_leg",
     "highlighted_keys",
@@ -658,6 +718,7 @@ __all__ = [
     "prune_selection",
     "remember_flow_date",
     "remove_link",
+    "rename_tag",
     "restore_hidden",
     "set_bidfile_split",
     "set_focus",

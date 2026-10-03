@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from dialog_helpers import let_go_of_closed_widgets
+
 from ui.scheduling.state import BIDFILE_DIALOG, FLOW_DATE_MEMORY, LINK_DIALOG
 
 PAGE_PATH = str(Path(__file__).resolve().parents[2] / "pages" / "1_Scheduling_View.py")
@@ -71,6 +73,8 @@ def _emit(at, event):
 
 def _click(at, label):
     [b for b in _in_dialog(at).button if b.label == label][0].click().run()
+    # Closing the popup takes its tag fields with it — see dialog_helpers.
+    let_go_of_closed_widgets(at)
     return at
 
 def _in_dialog(at):

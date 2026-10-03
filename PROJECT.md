@@ -655,31 +655,278 @@ never goes away.
 
 A link is a decision about which buy covers which sale. A **tag** is the
 paperwork that makes it flow: the control areas, the PSE chain, the
-transmission reservations and who gets a copy. Clicking a link opens the
-same popup as before, now with two tabs — **Schedule** (the hours, as
-before) and **Tag**.
+transmission reservations and who gets a copy. Clicking a link opens the same
+popup as before — **one surface, no tabs** — because tagging isn't a separate
+job from allocating the hours; it's the next thing you do with the same link.
+A link still being *drawn* carries its tag too, filed under `PENDING_TAG`
+until Create link gives it an id.
 
-The scope of this first version is deliberately small: type the path, press
-Generate. The e-Tag path strings the desk exchanges on ICE chat
-(`HE1-6; Mead MAG (G @ SWPW) (SWPP tx CRSP>PNPK, 2nh TBD) - MAG - EEMU -
-TNSK - MGM sink`) are **not** parsed yet — that needs the corpus of
-string-to-tag examples still to be assembled, and a wrong parse of a path
-is a tag that flows the wrong energy. Nor is "copy the latest tag with this
-path". Both are still on the TODO.
+The popup runs top to bottom in the order the work happens:
+
+    Buy from BPEC at MIDC · sell to BPAT at MIDC    who and where, no MW
+    [ the hour editor ]                            the link itself
+    800 MWh on this link · BPEC 800 MWh open · …
+    ----
+    Path string                 ??-BPEC01-MAG001-BPAP01-??   (copyable)
+    [ paste what came back ]
+    > Tag details                                  an expander
+    ----
+    Create link      Cancel
+
+The header carries no MW and no hours: both are in the grid immediately
+below it, and a header that repeats the grid underneath is a header nobody
+reads. What it does keep is each side's **open** position, which the grid
+can't show — that comes from the *other* links on the leg, not this one.
+
+The tag fields go behind an expander, shut on a link being drawn and open on
+one being clicked again. Most links never need them (see below), and a popup
+that opens with all of them showing buries the two things actually in hand.
+
+The scope is deliberately small: type the path, press Generate. Neither
+parsing the chat strings nor "copy the latest tag with this path" is built;
+both are still on the TODO.
+
+### The path string, and the links MAG doesn't have to tag
+
+Tags fall into two kinds: the ones **MAG has to tag**, and the ones it
+doesn't — and the second kind splits again into those where MAG's
+information is needed to tag and those where it isn't. That last group is
+bilateral-to-bilateral, never into a market, and the desk's whole obligation
+on it is a string in a scheduler chat:
+
+    ??-BPEC01-MAG001-BPAP01-??
+
+The two PSEs either side of MAG are settled the moment the trade is done;
+everything past them — who generates, who sinks, which wires carry it — is
+filled in over the back-and-forth, and the string comes back a little longer
+each round:
+
+    HE7-22; MIDC BPEC (G @ NWMT) (BPAT tx MIDC>CROSSOVER, 7f 110704717)
+      - MAG - EEMU - TNSK - MGM sink
+
+`??` stands for a party nobody has named yet, so an end MAG itself stands
+at doesn't get one: selling into a market *is* MAG sinking the power, and
+the path stops there — `??-ABEX-MAG001(s)`, not `??-ABEX-MAG001-??`, which
+would claim somebody downstream is still to be found. Buying from one is
+the same fact the other way up and is marked `(g)`.
+
+So the popup generates the opening string from the link's own two ends, in
+the same PSE codes as the market path (`domain.tags.default_path_string` —
+one would be the desk telling a scheduler one route and tagging another),
+shows the latest one in an `st.code` block so it can be copied in one click,
+and takes the next round in the box below it. The box empties itself after
+each paste: this is a conversation, and a box still holding the last round's
+text is one you have to clear before you can use it again.
+
+**Nothing parses it yet.** It is displayed, copied and replaced — no more.
+Reading a path string back into the tag fields needs the corpus of
+string-to-tag examples still to be assembled, and a wrong parse of a path is
+a tag that flows the wrong energy. Splitting one link's MW across several
+paths is also still to come.
+
+### Lookup old tags
+
+Right under the path string, before the tag expander: a button that turns
+the link's own two counterparties into the routes the desk has actually run
+between them, read live from `MAG.dbo.OATI_Tag` and its three child tables
+(`data.tags_history`) and folded into routes (`domain.tag_recipes`) — the
+same corpus the export script builds, called here for the first time from
+inside the app itself rather than only from the command line.
+
+It means something the instant a link exists, before a single field is
+typed: the market path already names both ends (`domain.tags
+.default_market_path`), and that's the one thing `domain.tag_recipes
+.tag_query` reads to build its search — along with GCA/LCA, once they're
+filled in, to narrow things further. **The path string is not read at all**
+— a deliberate choice, since matching against it would need the same parser
+the path string itself is explicitly waiting on; the structured fields
+already in the tag are exact, where the string isn't parseable yet.
+
+Each match is its own card, read the way a scheduler checks a route:
+
+    RIMROCK (GWA) → SWPW_HUB (SWPW)
+    RRWE01 (G-F) > ABEX > MAG001 (L)
+    MATL WWA>MATL.NWMT [7-F] · NWMT MATL.NWMT>CROSSOVER [7-F]
+      · SWPP CROSSOVER>CRSP [6-NN]
+    GWA>SWPW · used 65× · last 2026-09-30 · ABEX
+
+Where the power starts and ends, the PSE chain, the wires, then how proven
+the route is. All of it is exact for the whole recipe rather than only for
+the sample it's read off, because the physical path and the chain are both
+part of the signature.
+
+**Every line is there because it separates one recipe from another.** Two
+cards that read alike are two a scheduler can't choose between, which is
+exactly what the first version did: an ABEX-SWPW lookup returned what
+looked like the same route four times. Two different things were hiding
+behind that, and they get opposite treatment:
+
+- The **energy product** on the chain (`RRWE01:G-F` against
+  `RRWE01:G-NF`) is a real difference in the deal, so it stays in the
+  signature and is now on the card.
+- The **transmission product** on a wheel (`[7-F]` against `[1-NS]`) is
+  not. Whether a leg was bought firm or non-firm is that day's paperwork,
+  not the route — the same wires between the same points are the same
+  route however the capacity was bought — so it came out of the signature
+  altogether, and the recipes it had been splitting merged.
+
+Between them, a route that read four ways now reads one: `RIMROCK (GWA) →
+SWPW_HUB (SWPW)` through MATL, NWMT and SWPP went from 34×, 31×, 29× and
+28× to a single **174×**.
+
+The reverse problem is detail nobody reads, and the summary folds three
+kinds away. **One reservation's legs are one wheel**: OATI records
+PALOVERDE500>PINALWEST500>VAIL345>GREENLEE345 as three segments all on
+107305499, and a scheduler calls that TEPC PALOVERDE500>GREENLEE345
+(2,853 runs of two in a year, 940 of three, 519 of four). **A segment that
+goes nowhere isn't a wheel**: 12% of them have the same POR and POD, which
+is bookkeeping inside one point. And **SWPP's four delivery points into
+SWPW — CRSP, WAUW, TSGT and CSU — are one place**, so a route through one
+is not a different route from the same route through another; that one
+folds in the *signature* (`EQUIVALENT_POINTS`), merging the recipes rather
+than merely the display, which is what turned a 34× and a 31× route into
+one 65× route. It's keyed by control area, because WAUW is also a control
+area of its own with a load point of the same name, and that one is a real
+destination.
+
+**A market end settles its control area.** A link selling into SWPW is MAG
+sinking the power there, so that tag's LCA *is* SWPW — and
+`domain.tag_recipes.rank_recipes` filters on it rather than merely
+preferring it. Without that, an EPE-MAG-SWPW link was offered the CISO
+routes the desk runs with the same counterparty, which are a different deal
+entirely. Four of the five markets tag under their own name; CAISO is the
+exception and tags as CISO (`domain.tags.MARKET_CONTROL_AREAS`, counted over
+a year of the desk's own tags). A GCA or LCA merely *typed* stays a
+preference — it's a field still being filled in, and ruling every route out
+on a half-typed code helps nobody.
+
+Together with the hard filter on sharing at least one counterparty — the one
+thing a query always has — that's what keeps the shortlist to routes this
+link could actually be.
+
+**Display-only until its own "Use this route" button is pressed** — same
+rule as every other history-based suggestion here: a choice, never a fill.
+Pressing one copies that route's GCA/LCA, source/sink points, market path
+and transmission rows onto the tag.
+
+### Which reservation numbers carry forward
+
+A reservation number belongs to a *day*, not to a route — 92% of the desk's
+own references appear on exactly one — so copying one off a route run two
+months ago would be worse than leaving the cell empty: a scheduler notices a
+blank, but has to *catch* a stale number. Applying a route therefore splits
+its reservations three ways:
+
+- **Not a reference at all** (`FCATBTEP`, `EPE5PVPV`, a bare contract
+  number): carried as-is. Nothing about them is dated, so nothing expires.
+- **A reference OASIS still covers on the flow date**: carried, and the
+  reservation lookup fills its path from it on the same click.
+- **Anything else** — expired, or a counterparty's and so unverifiable:
+  nothing is carried, not even the row. A line under the matches says what
+  was left and why.
+
+**A path is never carried, only ever looked up.** The Path column is filled
+from one place — OASIS, keyed on the number beside it — so a path on screen
+always has a reference behind it that a scheduler can go and check. Copying
+one off an old route would break that: it would read exactly like a path
+this day's reservation justifies, with nothing standing behind it. The
+reverse is fine and expected: a reference OASIS can't answer for sits there
+with its path blank.
+
+The tag expander, normally shut on a link still being drawn, opens the
+moment a route is applied so there's something to see.
+
+### The shape of the popup
+
+The hours and the path string run the full width; under them the route
+lookup and the tag fields sit side by side, because both are tall and
+stacking them is what made the popup scroll — together they cost the height
+of the taller one rather than the sum of the two. The modal is widened to
+1,600px with the same targeted CSS `ui/scheduling/bidgrid.py` uses on the
+bid-file one, since `st.dialog` offers only small and large and large is
+too narrow to put the two beside each other.
+
+Streamlit allows columns **one level deep**, which is why the Source and
+Sink halves stack their five fields rather than pairing them two to a row:
+the halves are already a row inside the tag column, and a row inside them
+would be the second level.
 
 ### What the link fills in, and what it doesn't
 
 Filled in, because the board already knows it: the flow date, the schedule
 (hour by hour, straight off the link — both halves of the sheet carry the
 same one), each end's market, a tag name (`ABEX-BPAT`), and a market path
-of *generator, MAG, load* with `G-F` on the first row and `L` on the last.
+of *generator, MAG, load* with `G-F` on the first row and `L` on the last —
+**written in PSE codes**, see below.
 
 Left blank, because nothing on the board knows it: GCA, LCA, the source and
-sink points, PSE codes, contracts, transmission reservations, carbon
-copies. The market path's ends start as the counterparty's **trading** name
-(ABEX, EPE), which is often not its PSE code (RRWE01, EPEC01) — the app has
-no lookup between the two, so those are a starting point to correct, not an
-answer. A tag that guessed here would be one a scheduler has to check
+sink points, contracts, transmission reservations, carbon copies.
+
+### PSE codes are never typed
+
+`BilateralMarket.MarketName` is the desk's internal name for a counterparty
+(AZPS, EPE) — the back-office key, and literally what a trade row carries, so
+a leg's `pse` field *is* a MarketName. A tag's market path is written in PSE
+codes (APS01, EPEC01) instead, and `BilateralMarketPseMapping` is the desk's
+own map between the two. `data/markets.py` reads it and the tag builder
+applies it, so nobody has to know both halves.
+
+Sixteen of the eighty markets map to **more than one** code — MSCG tags as
+RRWE01 and MSCG01, MAG as MAG001 and MMA — so "the" code for a market is a
+choice. The one used is whichever our own tags use most, counted over the
+last year of `OATI_TagMS`, falling back to the mapping table's order when
+that history can't be read. (Mapping order alone would give MAG *MMA*.)
+
+The market path's PSE cell is a dropdown of every mapped code **plus** every
+code our own tags have used: the mapping covers only 87% of the codes the
+history actually contains — PPLMS1, EPLUW and CITI01 are all real and all
+absent from it — so offering the mapping alone would refuse codes the desk
+writes every week.
+
+### The reservation number fills in its own path
+
+A transmission row on the sheet wants a path string like
+`WS/NWMT/NWMT-WAUW/MATL.NWMT-CROSSOVER/` and the OASIS reservation behind it.
+`OATI_TransmissionSummary_Hourly.PathName` **is** that string, character for
+character — the desk's own summary of the reservations it holds — so only the
+number is typed and the path follows from it. A path nobody types is a path
+nobody can mistype.
+
+Measured first, because it decided the shape of the feature: of 3,787
+reservation numbers used Jul-Sep, **92% appear on exactly one day** (median
+span: one day). They can never be carried over from a previous tag the way
+the rest of a route can — which is why this, and not "copy the latest tag",
+is what removes the typing.
+
+The lookup also reports what the reservation grants (`40 MW`, FIRM,
+confirmed). Tagging more MW than the reservation covers is an error that
+otherwise surfaces days later.
+
+Three things it deliberately does not do:
+
+- **Ask about anything that isn't a reference.** `FCATBTEP`, `EPEPVEX` and
+  `GF` all legitimately land in that column. Only a bare run of seven or nine
+  digits is looked up (`domain.tags.lookupable_aref`) — those being the only
+  two lengths in the desk's 39,699 OASIS references. Everything else is left
+  alone with no lookup and no complaint.
+- **Overwrite a path the scheduler wrote.** Only a blank cell is filled, or
+  one this lookup itself put there for a reference since changed.
+- **Treat "not found" as a problem.** The summary holds *MAG's* reservations;
+  a segment wheeled on a counterparty's is genuinely absent, which is the
+  case for about three references in ten. It says so and leaves the path.
+
+The fill happens in Python, so the editor is given a **fresh widget** for it
+(`_bump`) rather than being re-seeded: a data editor folds its own diff over
+whatever it is seeded with, so re-seeding alone would leave the trader's older
+edit sitting on top. Remove that rename and the page loops — the fill is
+re-made every run and never settles. There is a counter guarding that, since
+a spinning browser is the worst way for this to fail.
+
+**The sheet's two PSE cells are not fields.** D10 and D47 are the first and
+last PSE of the market path, derived (`domain.tags.source_pse`), blank when
+MAG stands at that end. The desk's own files agree every time: the ABEX-SWPW
+tag's D10 is RRWE01, the head of its chain — not the ABEX in the Market cell
+above it. Asking for the same code twice is how the two come to disagree. A tag that guessed here would be one a scheduler has to check
 rather than fill.
 
 Only the GCA, the LCA and a two-ended market path are required. Everything
@@ -743,3 +990,70 @@ own name.
   column is open lands *under* the columns at full width — which is how the
   market path and the carbon copy first came out stacked instead of side by
   side.
+- **Tag widget state is cleared only when a popup opens**
+  (`clear_tag_widgets`). Clearing it at the other end — when a tag is
+  renamed onto its new link, deleted, or its popup closed — deletes the
+  state of widgets still on screen for the rest of that run. In the browser
+  that is a Streamlit policy violation; in AppTest it leaves an unreadable
+  widget tree and every following test raises.
+- **AppTest can't follow a widget that disappears.** Streamlit discards a
+  widget's state on a run that doesn't render it, but AppTest still asks
+  session_state for every widget in the *previous* run's tree. Closing the
+  link popup does exactly that to a dozen tag fields, so the ui tests share
+  `tests/ui/dialog_helpers.let_go_of_closed_widgets`. Nothing about the app
+  is faked by it — the browser simply stops sending widgets it no longer
+  shows.
+
+## Phase 3b — the tag corpus
+
+Nothing the desk does is written down as well as what it has already tagged.
+`MAG.dbo.OATI_Tag` and its three child tables hold **65,730 West tags**
+(11,033 in 2026), and they reconstruct the desk's spreadsheets exactly:
+TagIndex 47185747 is the same tag as
+`Tag_dynamique_bilateral - … - ABEX-SWPW GWA.xlsx`, market path and
+reservation numbers included.
+
+    OATI_Tag     the header: GCA, LCA, the times (UTC)
+    OATI_TagMS   the market path: PSEcode + EnergyProduct, in chain order
+    OATI_TagPS   the physical path: one G row, one L row, a T row per wire
+    OATI_TagTA   the reservation behind each T row — the sheet's "# trans"
+
+**These four tables are read-only, always.** Every statement the app sends
+them comes from one of the four `data/sql/oati_*.sql` files, and every one of
+those is a SELECT — which makes the guarantee checkable by reading four short
+files. `tests/data/test_tags_history.py` asserts it without needing a
+database, so it holds on every `pytest` run rather than only under
+`--run-db`.
+
+### Recipes
+
+`domain/tag_recipes.py` reduces a tag to a **signature**: the same string for
+two tags that differ only in date, MW and reservation number.
+
+    GWA>SWPW || MS RRWE01:G-F > ABEX:- > MAG001:L || PS 1:G RIMROCK(GWA) ;
+      2:T MATL WWA(MATL)>MATL.NWMT(MATL) [1-NS] ; ... ; 3:L SWPW_HUB(SWPW)
+
+2026's 6,938 good West tags collapse to 2,367 recipes. The market path alone
+would give 1,094 — the physical path is what separates genuinely different
+routes, and it matters: the ABEX-SWPW market path was run 228 times over 36
+different physical variants (7-F one week, 1-NS the next).
+
+`scripts/export_tag_corpus.py` writes them to a gitignored `tag_corpus/`:
+`recipes.csv` most-used-first, and one self-contained JSON per recipe with
+complete sample tags. Local only — internal tagging records.
+
+**The quality filter matters.** West GCA *and* LCA, `TestTag = 0`, and
+`LastAction` in IMPLEMENTED/ADJUSTED/CURTAILED/EXTENDED/RELOADED/CONFIRMED.
+The 3,635 WITHDRAWN and CANCELLED tags in 2026 are routes the desk pulled
+back; a corpus meant to teach patterns is worse for including them.
+
+### Two traps in that data
+
+- **"The counterparty" is not one PSE.** MAG001 is last in 34% of 2026's
+  chains, in the middle in 31%, first in 19%, and appears *twice* in 15% (a
+  wheel like `RRWE01 > MSCG01 > MAG001 > MSCG01 > AESO`). `counterparties_of`
+  answers with the set of MAG's neighbours — one in 69% of tags, two in 31%.
+- **OATI times are UTC; the app is PPT.** A full PPT day reads as 07:00 to
+  07:00, and the offset is seven hours for half the year and eight for the
+  other half — so the flow date is a `zoneinfo` conversion at the data
+  boundary, never a subtraction.

@@ -69,23 +69,29 @@ def blank_tag(flow_date=None):
         # What the file is named after, following the counterparties by
         # default: "ABEX-SWPW" in "… - September 25 2026 - ABEX-SWPW.xlsx".
         "name": "",
+        # No PSE on either half: the sheet has a cell for each, but both are
+        # the ends of the market path — see source_pse/sink_pse — and asking
+        # for the same code twice is how the two come to disagree.
         "source": {
-            "market": "", "gca": "", "point": "", "pse": "",
-            "comment": "", "contract": "",
+            "market": "", "gca": "", "point": "", "comment": "", "contract": "",
         },
         "sink": {
-            "market": "", "lca": "", "point": "", "pse": "",
-            "comment": "", "contract": "",
+            "market": "", "lca": "", "point": "", "comment": "", "contract": "",
         },
         "market_path": [],
         "transmissions": [],
         "carbon_copy": [],
+        # The path as it stands in the scheduler chat — see
+        # default_path_string. Free text on purpose: it is whatever the last
+        # round of the back-and-forth produced, and nothing here reads it
+        # back into the fields above yet.
+        "path_string": "",
         # PPT hour-ending -> MW, straight off the link.
         "mw_by_hour": {},
     }
 
 
-def default_market_path(buy_leg, sell_leg):
+def default_market_path(buy_leg, sell_leg, pse_for=None):
     """The PSE chain a link implies: generator, MAG, load.
 
     A market end has no PSE of its own — MAG is the one standing at it — so
@@ -93,13 +99,22 @@ def default_market_path(buy_leg, sell_leg):
     both ends in markets gives MAG at both ends, which is exactly what the
     desk's own SWPW-SWPP template holds.
 
-    The codes a counterparty end starts with are its *trading* name (ABEX,
-    EPE), not always its PSE code (RRWE01, EPEC01) — the app has no lookup
-    from one to the other, so this is a starting point the trader corrects,
-    not an answer.
+    `pse_for` maps a market name to its tagging PSE code
+    (`data.markets.pse_for_market`). A leg's `pse` field holds a
+    `BilateralMarket.MarketName` — the desk's internal name, ABEX or EPE —
+    and a tag's market path is written in PSE codes, EPEC01 rather than EPE.
+    Passed the lookup, this writes the codes; without it, or for a market the
+    lookup doesn't know, it falls back to the internal name so the row is
+    still a legible starting point rather than an empty cell.
     """
-    generator = MAG_PSE if buy_leg.is_market else buy_leg.pse
-    load = MAG_PSE if sell_leg.is_market else sell_leg.pse
+    pse_for = pse_for or (lambda market: None)
+
+    def code_for(leg):
+        if leg.is_market:
+            return MAG_PSE
+        return pse_for(leg.pse) or leg.pse
+
+    generator, load = code_for(buy_leg), code_for(sell_leg)
     middle = [] if MAG_PSE in (generator, load) else [MAG_PSE]
     chain = [generator] + middle + [load]
 
@@ -109,7 +124,48 @@ def default_market_path(buy_leg, sell_leg):
     return rows
 
 
-def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date):
+#: What stands in for an end of the path nobody has named yet.
+#:
+#: The desk's chat strings are built outward from the middle. The two PSEs
+#: either side of MAG are settled the moment the trade is done; everything
+#: past them — who generates, who sinks, which wires carry it — is filled in
+#: over the back-and-forth with the other schedulers. So the opening offer
+#: is the part that is already certain, with a placeholder at each end.
+PATH_UNKNOWN = "??"
+
+#: How the chain marks the end MAG itself stands at — generator or sink.
+#: Only reached when that end is a market, because that is the only way MAG
+#: is the last party rather than one in the middle.
+GENERATOR_MARK, SINK_MARK = "(g)", "(s)"
+
+
+def default_path_string(buy_leg, sell_leg, pse_for=None):
+    """The opening path string for this link: `??-ABEX-MAG001-BPAT-??`.
+
+    The same chain as `default_market_path`, in the same PSE codes, written
+    the way schedulers exchange it. A starting point rather than an answer:
+    on a link MAG doesn't have to tag, this is what gets pasted into the
+    chat and comes back a little longer each round.
+
+    `??` stands for a party nobody has named yet — so an end MAG itself
+    stands at doesn't get one. Selling into a market *is* MAG sinking the
+    power, and the path stops there: `??-EPEC01-MAG001(s)`, not
+    `??-EPEC01-MAG001-??`, which would claim somebody downstream is still
+    to be found. Buying from one is the same fact the other way up, and is
+    marked `(g)` by symmetry — the desk named only the sink case, so that
+    one follows its wording and this one follows its logic.
+    """
+    chain = [row["pse"] for row in default_market_path(buy_leg, sell_leg, pse_for)]
+    head = PATH_UNKNOWN if not getattr(buy_leg, "is_market", False) else None
+    tail = PATH_UNKNOWN if not getattr(sell_leg, "is_market", False) else None
+    if head is None and chain:
+        chain[0] += GENERATOR_MARK
+    if tail is None and chain:
+        chain[-1] += SINK_MARK
+    return "-".join([p for p in (head, *chain, tail) if p])
+
+
+def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date, pse_for=None):
     """The tag a link starts as: its schedule, its two ends' markets, and
     the market path those two ends imply. Everything else is blank, because
     nothing on the board knows it."""
@@ -117,9 +173,110 @@ def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date):
     tag["name"] = f"{buy_leg.pse}-{sell_leg.pse}"
     tag["source"]["market"] = buy_leg.pse
     tag["sink"]["market"] = sell_leg.pse
-    tag["market_path"] = default_market_path(buy_leg, sell_leg)
+    tag["market_path"] = default_market_path(buy_leg, sell_leg, pse_for)
+    tag["path_string"] = default_path_string(buy_leg, sell_leg, pse_for)
     tag["mw_by_hour"] = {int(h): float(mw) for h, mw in mw_by_hour.items()}
     return tag
+
+
+def source_pse(tag):
+    """The sheet's "Source PSE" cell: the first PSE of the market path.
+
+    Not typed anywhere — it *is* the head of the chain, and the desk's own
+    files agree every time: the ABEX-SWPW tag's D10 is RRWE01, which is its
+    market path's first row, not the ABEX in the Market cell above it.
+
+    Blank when MAG stands at that end, matching the desk's own files again
+    (the SWPW-SWPP template leaves both PSE cells empty and puts MAG at both
+    ends of the path).
+    """
+    rows = market_path_rows(tag)
+    return _pse_unless_mag(rows[0]["pse"]) if rows else ""
+
+
+def sink_pse(tag):
+    """The sheet's "Source PSE" cell on the sink half — the last PSE of the
+    market path. See source_pse; the sheet reuses the label."""
+    rows = market_path_rows(tag)
+    return _pse_unless_mag(rows[-1]["pse"]) if rows else ""
+
+
+def _pse_unless_mag(pse):
+    return "" if pse == MAG_PSE else pse
+
+
+#: The lengths an OASIS assignment reference actually has. Every one of the
+#: 39,699 references in the desk's own OASIS summary is either seven or nine
+#: digits — nine for the overwhelming majority, seven for the older ones.
+#:
+#: Widened from "nine digits" deliberately: seven-digit references are real,
+#: they resolve, and ten of them appear on the desk's September tags. Change
+#: this set to {9} for the strict reading.
+AREF_LENGTHS = frozenset({7, 9})
+
+
+#: The control area a market end tags under.
+#:
+#: Four of the five markets tag under their own trading name; CAISO is the
+#: exception, and tags as CISO. Counted over a year of the desk's own West
+#: tags: CISO appears as a control area 2,670 times, SWPW 2,492, SWPP 1,561,
+#: AESO 724 and CEN 218 — "CAISO" never once.
+#:
+#: This matters because a market end is not a guess: if a link sells into
+#: SWPW then MAG sinks the power there, and the tag's LCA *is* SWPW. A
+#: market a future desk adds falls back to its own name, which is right four
+#: times out of five.
+MARKET_CONTROL_AREAS = {
+    "CAISO": "CISO",
+    "SWPW": "SWPW",
+    "SWPP": "SWPP",
+    "AESO": "AESO",
+    "CEN": "CEN",
+}
+
+
+def control_area_for_market(market):
+    """The GCA or LCA a link into this market implies. See
+    MARKET_CONTROL_AREAS; None for anything that isn't a market."""
+    name = (market or "").strip().upper()
+    return MARKET_CONTROL_AREAS.get(name, name) or None
+
+
+def reservation_covers(found, flow_date):
+    """Whether an OASIS reservation is still good on this flow date.
+
+    A reservation number is not a property of a route, it's a property of a
+    *day*: 92% of the desk's own references appear on exactly one. So a
+    number copied off a tag run last month is almost always dead, and
+    copying it forward would be worse than leaving the cell empty — the
+    scheduler would have to notice it was wrong rather than notice it was
+    missing.
+
+    Unknown dates answer False. Not knowing whether a reservation still
+    covers the day is not the same as knowing that it does.
+    """
+    first, last = (found or {}).get("first_date"), (found or {}).get("last_date")
+    if not first or not last or not flow_date:
+        return False
+    return _as_date(first) <= flow_date <= _as_date(last)
+
+
+def _as_date(value):
+    """A date, whether the driver handed back a date or a datetime."""
+    return value.date() if hasattr(value, "date") else value
+
+
+def lookupable_aref(text):
+    """Whether this "# trans" value is worth asking OASIS about.
+
+    The column takes anything a scheduler needs to write there, and plenty
+    of what lands in it is not an assignment reference at all — `FCATBTEP`,
+    `EPEPVEX`, `GF`, a bare contract number. Those are left entirely alone:
+    no lookup, no path filled, no complaint. Only a plain run of digits of
+    the right length is asked about.
+    """
+    value = (text or "").strip()
+    return value.isdigit() and len(value) in AREF_LENGTHS
 
 
 def clean_rows(rows, fields):

@@ -13,3 +13,6 @@ venv/
 .pytest_cache/
 
 node_modules/
+
+# The exported tag corpus: internal e-Tag records, never committed.
+tag_corpus/

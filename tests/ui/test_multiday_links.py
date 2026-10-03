@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from dialog_helpers import let_go_of_closed_widgets
+
 from domain.bidfiles import SHORT
 from domain.matching import TradeLeg
 from ui.scheduling.state import (
@@ -96,6 +98,7 @@ def _emit(at, event):
 
 def _click(at, label):
     [b for b in _in_dialog(at).button if b.label == label][0].click().run()
+    let_go_of_closed_widgets(at)
     return at
 
 

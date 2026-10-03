@@ -9,6 +9,7 @@ import pytest
 from domain.matching import BUY, SELL, TradeLeg
 from domain.tags import (
     GENERATOR_PRODUCT,
+    PATH_UNKNOWN,
     LOAD_PRODUCT,
     MAG_PSE,
     blank_tag,
@@ -16,10 +17,14 @@ from domain.tags import (
     clean_rows,
     day_folder_name,
     default_market_path,
+    default_path_string,
     default_tag,
     folder_covers,
+    lookupable_aref,
     market_path_rows,
     safe_name,
+    sink_pse,
+    source_pse,
     tag_errors,
     tag_filename,
     transmission_rows,
@@ -91,6 +96,98 @@ class TestTheChainALinkImplies:
         ]
 
 
+class TestTheChainIsWrittenInPseCodes:
+    """A leg's `pse` is a BilateralMarket.MarketName — the desk's internal
+    name, AZPS — and a tag's market path is written in PSE codes, APS01. The
+    lookup is passed in so domain/ stays free of the database."""
+
+    CODES = {"AZPS": "APS01", "EPE": "EPEC01", "BPAT": "BPAP01"}
+
+    def pse_for(self, market):
+        return self.CODES.get(market)
+
+    def test_both_ends_come_back_as_codes(self):
+        path = default_market_path(leg(BUY, "AZPS"), leg(SELL, "EPE"), self.pse_for)
+        assert [row["pse"] for row in path] == ["APS01", MAG_PSE, "EPEC01"]
+
+    def test_a_market_the_lookup_does_not_know_keeps_its_own_name(self):
+        # Better a legible starting point than an empty cell — ABEX really
+        # does tag as ABEX, and a counterparty missing from the mapping is
+        # a gap in the mapping, not a reason to refuse the row.
+        path = default_market_path(leg(BUY, "ABEX"), leg(SELL, "EPE"), self.pse_for)
+        assert [row["pse"] for row in path] == ["ABEX", MAG_PSE, "EPEC01"]
+
+    def test_with_no_lookup_at_all_it_behaves_as_it_did_before(self):
+        path = default_market_path(leg(BUY, "AZPS"), leg(SELL, "EPE"))
+        assert [row["pse"] for row in path] == ["AZPS", MAG_PSE, "EPE"]
+
+    def test_a_market_end_is_still_mag(self):
+        # SWPW is a place, not a counterparty: it has no PSE of its own and
+        # the lookup correctly answers None for it.
+        path = default_market_path(
+            leg(BUY, "AZPS"), leg(SELL, "SWPW", source="market"), self.pse_for
+        )
+        assert [row["pse"] for row in path] == ["APS01", MAG_PSE]
+
+    def test_the_lookup_reaches_a_whole_tag(self):
+        tag = default_tag(
+            leg(BUY, "AZPS"), leg(SELL, "EPE"), {1: 1.0}, FLOW, pse_for=self.pse_for
+        )
+        assert [row["pse"] for row in tag["market_path"]] == [
+            "APS01", MAG_PSE, "EPEC01"
+        ]
+        # The Market cells keep the internal name — that is what the desk
+        # writes in them, and it is what the back office keys on.
+        assert tag["source"]["market"] == "AZPS"
+
+
+class TestTheSheetsTwoPseCellsAreDerived:
+    def test_the_source_cell_is_the_head_of_the_path(self):
+        tag = filled_tag(market_path=[
+            {"pse": "RRWE01", "product": "G-F"},
+            {"pse": "ABEX", "product": ""},
+            {"pse": MAG_PSE, "product": "L"},
+        ])
+        assert source_pse(tag) == "RRWE01"
+
+    def test_the_sink_cell_is_the_tail(self):
+        tag = filled_tag(market_path=[
+            {"pse": "APS01", "product": "G-F"},
+            {"pse": MAG_PSE, "product": ""},
+            {"pse": "EPEC01", "product": "L"},
+        ])
+        assert sink_pse(tag) == "EPEC01"
+
+    def test_a_mag_end_is_blank_not_mag(self):
+        # What the desk's own files hold: MAG sinking into SWPW leaves the
+        # sink PSE cell empty rather than writing MAG001 into it.
+        tag = filled_tag(market_path=[
+            {"pse": "RRWE01", "product": "G-F"},
+            {"pse": MAG_PSE, "product": "L"},
+        ])
+        assert (source_pse(tag), sink_pse(tag)) == ("RRWE01", "")
+
+    def test_both_blank_when_mag_stands_at_both_ends(self):
+        tag = filled_tag(market_path=[
+            {"pse": MAG_PSE, "product": "G-F"},
+            {"pse": MAG_PSE, "product": "L"},
+        ])
+        assert (source_pse(tag), sink_pse(tag)) == ("", "")
+
+    def test_an_empty_path_answers_blank_rather_than_raising(self):
+        tag = blank_tag(FLOW)
+        assert (source_pse(tag), sink_pse(tag)) == ("", "")
+
+    def test_a_one_row_path_is_both_ends(self):
+        tag = filled_tag(market_path=[{"pse": "APS01", "product": "G-F"}])
+        assert (source_pse(tag), sink_pse(tag)) == ("APS01", "APS01")
+
+    def test_neither_is_a_field_a_trader_can_type(self):
+        # Removing them is the point: one code, one place.
+        assert "pse" not in blank_tag(FLOW)["source"]
+        assert "pse" not in blank_tag(FLOW)["sink"]
+
+
 class TestWhatALinkFillsIn:
     def test_the_schedule_comes_from_the_link(self):
         tag = default_tag(leg(BUY, "ABEX"), leg(SELL, "BPAT"), {7: 25.0, 8: 30.0}, FLOW)
@@ -115,6 +212,68 @@ class TestWhatALinkFillsIn:
         assert tag["sink"]["lca"] == ""
         assert tag["transmissions"] == []
         assert tag["carbon_copy"] == []
+
+
+class TestTheOpeningPathString:
+    """What goes out on chat before anyone has agreed anything: the two PSEs
+    either side of MAG, and a placeholder for each end still to be named."""
+
+    CODES = {"AZPS": "APS01", "EPE": "EPEC01"}
+
+    def test_two_counterparties_with_mag_between_them(self):
+        assert (
+            default_path_string(leg(BUY, "ABEX"), leg(SELL, "BPAT"))
+            == "??-ABEX-MAG001-BPAT-??"
+        )
+
+    def test_it_is_written_in_the_same_codes_as_the_market_path(self):
+        # The string is the market path said out loud; the two disagreeing
+        # would be the desk telling a scheduler one route and tagging another.
+        string = default_path_string(
+            leg(BUY, "AZPS"), leg(SELL, "EPE"), self.CODES.get
+        )
+        assert string == "??-APS01-MAG001-EPEC01-??"
+
+    def test_selling_into_a_market_is_mag_sinking_it(self):
+        # A market end is MAG standing at it, which is a fact — and the
+        # placeholders are only ever for what nobody knows yet, so there
+        # isn't one past the end of the path.
+        string = default_path_string(
+            leg(BUY, "AZPS"), leg(SELL, "SWPW", source="market"), self.CODES.get
+        )
+        assert string == "??-APS01-MAG001(s)"
+
+    def test_buying_from_one_is_mag_generating_it(self):
+        string = default_path_string(
+            leg(BUY, "SWPW", source="market"), leg(SELL, "AZPS"), self.CODES.get
+        )
+        assert string == "MAG001(g)-APS01-??"
+
+    def test_a_market_at_both_ends_is_marked_at_both(self):
+        string = default_path_string(
+            leg(BUY, "SWPP", source="market"),
+            leg(SELL, "SWPW", source="market"),
+        )
+        assert string == "MAG001(g)-MAG001(s)"
+
+    def test_two_counterparties_keep_both_placeholders(self):
+        string = default_path_string(leg(BUY, "ABEX"), leg(SELL, "BPAT"))
+        assert string == "??-ABEX-MAG001-BPAT-??"
+        assert "(s)" not in string and "(g)" not in string
+
+    def test_both_ends_are_the_same_placeholder(self):
+        string = default_path_string(leg(BUY, "ABEX"), leg(SELL, "BPAT"))
+        assert string.startswith(f"{PATH_UNKNOWN}-")
+        assert string.endswith(f"-{PATH_UNKNOWN}")
+
+    def test_a_link_opens_carrying_it(self):
+        tag = default_tag(leg(BUY, "ABEX"), leg(SELL, "BPAT"), {1: 1.0}, FLOW)
+        assert tag["path_string"] == "??-ABEX-MAG001-BPAT-??"
+
+    def test_a_blank_tag_has_no_path_at_all(self):
+        # The shape carries the field; only a link can fill it, because only
+        # a link knows who the two counterparties are.
+        assert blank_tag(FLOW)["path_string"] == ""
 
 
 class TestReadingWhatTheEditorHandsBack:
@@ -191,6 +350,36 @@ class TestWhatStopsATagBeingWritten:
         assert any(
             f"room for {limit} {what} rows" in e for e in tag_errors(tag)
         ), tag_errors(tag)
+
+
+class TestWhichReservationNumbersAreWorthALookup:
+    """The "# trans" column takes whatever a scheduler needs to write in it.
+    Only a plain OASIS assignment reference is worth asking the database
+    about; everything else is left alone, with no lookup and no complaint."""
+
+    def test_a_nine_digit_reference(self):
+        assert lookupable_aref("109267045")
+
+    def test_a_seven_digit_one_too(self):
+        # Older references are seven digits, they resolve, and ten of them
+        # appear on the desk's own September tags.
+        assert lookupable_aref("5671116")
+
+    def test_surrounding_space_does_not_matter(self):
+        assert lookupable_aref("  109267045  ")
+
+    @pytest.mark.parametrize(
+        "value",
+        ["FCATBTEP", "EPEPVEX", "GF", "TEPC0503", "1-NS", "109,267,045", "", None],
+    )
+    def test_anything_that_is_not_a_bare_reference_is_left_alone(self, value):
+        assert not lookupable_aref(value)
+
+    @pytest.mark.parametrize("value", ["10031", "12345678", "1234567890"])
+    def test_nor_is_a_number_of_the_wrong_length(self, value):
+        # Contract references land in this column too, and asking OASIS
+        # about one only wastes a query.
+        assert not lookupable_aref(value)
 
 
 class TestWhatTheFileIsCalled:

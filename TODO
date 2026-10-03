@@ -4,19 +4,58 @@
 -Add coloring for NWS, NCS, SS/ACS attributes and don't allow links CISO>NCS and NWS>!NWS
 -add defaults to GCA/LCA in SWPW bid files
 -Color links if MAG has to tag, MAG doesn't have to tag, Tagged
+-Add hourly open positions
 -Tagging workflows
-    -DONE (v1): clicking a link opens a Tag tab beside Schedule — market
-     path, GCA/LCA, source/sink and their PSEs, transmission reservations,
-     carbon copy; the schedule comes from the link; Generate writes the
-     workbook. Writes to TAG Bilateral WEST\Test while TEST_MODE is on.
-    -TODO: parse the e-Tag path strings we exchange on ICE chat, e.g.
+    -DONE (v1): clicking a link opens the tag fields under the schedule in
+     one popup — market path, GCA/LCA, source/sink, transmission
+     reservations, carbon copy; the schedule comes from the link; Generate
+     writes the workbook. Writes to TAG Bilateral WEST\Test while
+     TEST_MODE is on.
+    -DONE (v2): PSE codes come from BilateralMarketPseMapping, ranked by
+     what our own tags use most, so nobody types the mapping; the sheet's
+     two PSE cells are derived from the market path's ends.
+    -DONE (v2): the OATI tag history (read-only) is assembled and grouped
+     into route recipes — python scripts/export_tag_corpus.py --start
+     2026-01-01 writes tag_corpus/ (gitignored).
+    -DONE (v3): the transmission reservation number fills in its own path
+     from our OASIS summary, and reports what it grants. Non-standard
+     references (FCATBTEP and the like) are left alone.
+    -TODO: parse the e-Tag path strings we exchange on ICE chat, using the
+     corpus above as the ground truth. e.g.
      HE1-6; Mead MAG (G @ SWPW) (SWPP tx CRSP>PNPK, 2nh TBD)(WALC tx
      PPK>MEAD, 7f 110704717) - MAG - EEMU - TNSK - MGM sink. Needs the
      corpus of string-to-tag matches first. One schedule can split across
      paths, so a link can produce more than one tag — don't assume one.
-    -TODO: the current path string to copy into a scheduler chat, defaulting
-     to the minimal ?-{buy counterparty}-MAG-{sell counterparty}-? .
-    -TODO: 'copy latest tag' — fill whatever is still empty from the most
-     recent tag with the same path.
-    -TODO: split MW across several tags from one link.
-    -I have some feedback: 1) I don't want it on another tab in the pop-up. Merge the two together. 2) I've added the files data\sql\bilateral_market_pse_map.sql and data\sql\bilateral_markets.sql which have the information necessary to map a market's internal name (used for back office processes) and its pse code (used for tagging in the market path). I want the code to be smart and to always use this lookup to not ask the user himself to have to enter the mapping. Remember that PSEs are always used in the market path. That also means that we can remove the PSE entry from both Source and Sink as those can be determined from the Market entry. 
+    -DONE (v4): the link popup leads with the path string. It opens as
+     ??-{buy PSE}-MAG001-{sell PSE}-??, sits in a copyable block above a
+     paste box that takes each round back, and the tag fields moved behind
+     an expander — shut on a link being drawn, open on one clicked again.
+    -DONE (v5): "Lookup old tags", under the path string. Reads OATI
+     history and ranks it against the link's own counterparties (always
+     known, nothing typed) plus GCA/LCA once filled in — matching on the
+     tag's structured fields, never the path string, which still can't be
+     parsed. Every match is its own "Use this route" button, display-only
+     until pressed: a choice, never a fill. Each is shown by where the
+     power starts and ends, its PSE chain and its wheels — enough detail
+     that no two cards read alike. A market end settles its control area,
+     so a link into SWPW is never offered a CISO route, and its path
+     string ends MAG001(s) rather than a placeholder. The popup runs the
+     hours and the path string full width and puts the lookup beside the
+     tag fields below them.
+     Pressing one fills GCA/LCA, source/sink points and market path, and
+     carries a reservation number only where it is still good for the flow
+     date or isn't a dated reference at all — an expired one leaves the
+     number blank and keeps its path.
+    -TODO: warn before Generate when a tag matches no route we have ever
+     run — the cheapest typo-catcher available now the corpus exists.
+    -TODO: split MW across several tags — several paths — from one link.
+     Wanted first for the 2b) links below, where it is the only thing left
+     the string handling can't do.
+    -TODO: tell the three kinds of tag apart, and let the popup say which
+     one a link is. 1) MAG has to tag it. 2a) MAG doesn't, but its
+     information is needed to. 2b) MAG doesn't and its information isn't
+     needed — bilateral to bilateral, never into a market, and the whole
+     job is carrying the string. Nothing in the app distinguishes them yet;
+     the path string and the tag expander are shaped so that a 2b) link
+     never has to open the expander.
+

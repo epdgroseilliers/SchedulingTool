@@ -7,10 +7,11 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-682 tests total: all but 16 run with no network dependency beyond what
-rendering the app already needs (see below); those 16 are marked `db` and
+924 tests total: all but 26 run with no network dependency beyond what
+rendering the app already needs (see below); those 26 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
-cleanly without them.
+cleanly without them, and a couple skip on a weekday whose WECC trading
+session covers a single flow date.
 
 ## Layout
 
@@ -29,9 +30,38 @@ tests/
     test_bidfiles.py        Phase 2: grouping a market's links by
                              counterparty into SHORT/LONG, and validating a
                              trader's split of one — pure, no filesystem
-    test_tags.py            Phase 3: the PSE chain a link implies, what
-                             stops a tag being written, and how the desk
-                             names its tag files and day folders
+    test_tags.py            Phase 3: the PSE chain a link implies (in PSE
+                             codes, via a lookup passed in), that same chain
+                             written as the opening path string for the
+                             scheduler chat, the two sheet cells derived from
+                             that chain, what stops a tag being written, and
+                             how the desk names its tag files and day folders
+    test_tag_recipes.py     Phase 3: a tag reduced to the route it follows —
+                             the golden signature for the desk's own
+                             ABEX-SWPW tag, what it deliberately ignores
+                             (dates, MW, reservation numbers), what it
+                             separates, and who counts as a counterparty
+                             when MAG appears twice in one chain. Also
+                             "Lookup old tags": the query built from a live
+                             tag (MAG always filtered out, case folded), and
+                             ranking recipes against it — no shared
+                             counterparty excludes even a matching GCA, an
+                             exact GCA/LCA match outranks a bare
+                             counterparty match, ties break the way
+                             group_by_recipe's own list already does, a
+                             market end settles its control area (CAISO
+                             tagging as CISO) and rules the other areas out
+                             rather than merely ranking them, and what a
+                             route is shown by — its two physical ends, its
+                             PSE chain with the energy products, and its
+                             wheels, with one reservation's legs folded
+                             into one wheel and segments that go nowhere
+                             dropped — and that firm and non-firm over the
+                             same wire are one route, while two energy
+                             products are two. Also
+                             that SWPP's four delivery points into SWPW are
+                             one place for grouping, while the same name in
+                             another control area is not
   data/
     test_trade_string.py    the broker-string parser — pure, the most
                              heavily-exercised code in the app
@@ -40,6 +70,27 @@ tests/
                              (checked against a fake connection)
     test_bilateral_db.py    marked db: live lookups against MAGAPPSERVER
                              (resolve_and_validate, load_market_full_names)
+    test_markets.py         market name -> tagging PSE code: the mapping,
+                             the usage ranking that breaks a tie, both
+                             degradations, plus db-marked live checks that
+                             AZPS is APS01 and MAG is MAG001
+    test_reservations.py    the OASIS reservation lookup: the path it
+                             answers with, that an unknown reference and an
+                             unreachable database are both simply "no
+                             answer", and the read-only guarantee. Three
+                             db-marked tests pin the real reservation named
+                             on the desk's own September ABEX-SWPW tag
+    test_tags_history.py    assembling a tag out of OATI's four tables:
+                             chain order, the TagTA->TagPS join (and that it
+                             can't cross tags), the UTC->PPT flow date, and
+                             **the read-only guarantee** — the SQL files
+                             carry no write verb, the module builds no SQL
+                             and opens no transaction. Those run with no
+                             database; four more are db-marked
+    test_export_tag_corpus.py  the corpus written to disk: the recipe table,
+                             the self-contained sample files, the filters,
+                             and that the folder ignores itself. Driven with
+                             a fake history; everything lands in tmp_path
     test_matching_reads.py  the flow-date book query: row conversion, SQL
                              shape, degrade-to-empty — plus one db-marked
                              read against the live table. Named _reads
@@ -91,13 +142,47 @@ tests/
                               width) and what it makes of each event
                               (rebalancing a split, dropping one, the replay
                               guard)
-    test_tag_popup.py        the Tag tab of the link popup: that clicking
-                              a link opens a tag seeded from it, what the
-                              trader types reaching the tag (including the
-                              tables, whose seeds must not move), and
-                              generating — the validation gate, the
-                              overwrite gate, a failed write. Every file
-                              goes to tmp_path; never Y:\West
+    test_tag_popup.py        the tagging half of the link popup: that
+                              clicking a link opens a tag seeded from it,
+                              that a link still being *drawn* has one too and
+                              carries it onto the link, what the trader types
+                              reaching the tag (including the tables, whose
+                              seeds must not move), and generating — the
+                              validation gate, the overwrite gate, a failed
+                              write. Also the path string: generated from the
+                              link's two ends, shown where it can be copied,
+                              replaced by what is pasted back (on that same
+                              run, with the box left empty for the next
+                              round), and never behind the tag expander —
+                              which is shut on a link being drawn and open on
+                              one clicked again. And "Lookup old tags": a
+                              shared counterparty surfaces a route (stubbed
+                              history — the live wiring is covered by
+                              test_tags_history.py and test_tag_recipes.py),
+                              an unrelated one never does, an error from the
+                              history read is a warning not a crash, nothing
+                              is written before "Use this route" is pressed,
+                              and pressing it fills GCA/LCA/points/market
+                              path/reservation numbers (leaving carbon copy
+                              and the tag's own name alone), opens the
+                              expander on a link still being drawn, and
+                              hands its reservation numbers straight to the
+                              existing OASIS fill on the same run. Which of
+                              those numbers carry forward at all: one still
+                              good on the flow date does, one that isn't a
+                              reference does, an expired one doesn't, and
+                              neither does one that isn't ours to check —
+                              nor does any path, ever, since a path is only
+                              looked up and never copied off an old route.
+                              Also that a link into a market is never
+                              offered a route sinking somewhere else. Every
+                              file goes to tmp_path; never Y:\West
+    dialog_helpers.py        not tests: one AppTest workaround shared by
+                              every module that closes a dialog. Streamlit
+                              discards a widget's state on a run that doesn't
+                              render it, but AppTest still reads the previous
+                              run's tree — so closing the link popup, which
+                              takes a dozen tag fields with it, needs a hand
     test_multiday_links.py   a trade spanning several flow dates: one link
                               per day, created on every day both trades
                               flow *later in the session being traded* —
@@ -207,3 +292,22 @@ table, not a sandbox. **No test in this suite calls it for real.**
 If you add a test that clicks **Add Trade** with **Input in DB** ticked,
 request the `no_real_db_writes` fixture. There is no other sanctioned way
 to exercise that path in this suite.
+
+## Safety: nothing here writes to the tagging database either
+
+`MAG.dbo.OATI_Tag` and its three child tables are the live e-Tag record —
+what regulators and counterparties see. **The app only ever reads them**, and
+that guarantee is enforced in the fast tier rather than left to `--run-db`:
+
+- `data/tags_history.py` exposes no write function, builds no SQL of its own
+  (every statement is a file's contents handed to `text()`), and never opens
+  a transaction — `engine.connect()`, never `engine.begin()`.
+- The four `data/sql/oati_*.sql` files are scanned for `INSERT`, `UPDATE`,
+  `DELETE`, `MERGE`, `DROP`, `ALTER`, `TRUNCATE`, `CREATE`, `GRANT`, `EXEC`
+  **and `INTO`** — the last because `SELECT … INTO #tmp` is the one write
+  that would otherwise look innocent.
+- `test_tags_history.py::TestNothingCanWriteToOati` is all of the above, and
+  needs no database to run.
+
+`data/markets.py` reads `OATI_TagMS` too, for the PSE usage ranking, under
+the same rule.

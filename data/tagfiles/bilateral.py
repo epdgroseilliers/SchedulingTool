@@ -32,6 +32,8 @@ from domain.tags import (
     day_folder_name,
     folder_covers,
     market_path_rows,
+    sink_pse,
+    source_pse,
     tag_filename,
     transmission_rows,
 )
@@ -50,17 +52,21 @@ SHEET = "BIDS"
 
 DATE_CELL, LABEL_CELL = "C5", "D5"
 
-#: The six cells of each half, in the order the sheet lists them. The
-#: source half's second row is the GCA and the sink half's is the LCA —
-#: the only difference between the two blocks.
+#: The cells of each half the trader fills, in the order the sheet lists
+#: them. The source half's second row is the GCA and the sink half's is the
+#: LCA — the only difference between the two blocks.
 SOURCE_CELLS = {
-    "market": "D7", "gca": "D8", "point": "D9", "pse": "D10",
+    "market": "D7", "gca": "D8", "point": "D9",
     "comment": "D11", "contract": "D12",
 }
 SINK_CELLS = {
-    "market": "D44", "lca": "D45", "point": "D46", "pse": "D47",
+    "market": "D44", "lca": "D45", "point": "D46",
     "comment": "D48", "contract": "D49",
 }
+
+#: The two PSE cells, which nobody types: they are the ends of the market
+#: path — see domain.tags.source_pse.
+SOURCE_PSE_CELL, SINK_PSE_CELL = "D10", "D47"
 
 #: Each MW block: the row EPT HE1 sits on, then the three rows holding HE1-3
 #: of the *next* EPT day (the last three hours of the PPT day).
@@ -128,6 +134,12 @@ def build_workbook(tag):
         for field, cell in cells.items():
             if half.get(field):
                 ws[cell] = half[field]
+
+    # The two PSE cells come from the market path's own ends, not from a
+    # field of their own — the one place either code is written down.
+    for cell, pse in ((SOURCE_PSE_CELL, source_pse(tag)), (SINK_PSE_CELL, sink_pse(tag))):
+        if pse:
+            ws[cell] = pse
 
     # Both halves of the sheet carry the same schedule: it is one flow of
     # energy described from each end.
