@@ -21,7 +21,14 @@ def let_go_of_closed_widgets(at, prefix="mv_tag_"):
     and survives all of this, and the browser has no such problem because it
     simply stops sending widgets it no longer shows.
     """
-    for elements, gone_value in ((at.text_input, ""), (at.checkbox, False)):
+    # A radio's stand-in has to be one of its own options — AppTest reads
+    # the value back as an index into them — so each kind brings its own.
+    kinds = (
+        (at.text_input, lambda element: ""),
+        (at.checkbox, lambda element: False),
+        (at.radio, lambda element: (element.options or [None])[0]),
+    )
+    for elements, gone_value in kinds:
         for element in elements:
             key = element.key or ""
             if not key.startswith(prefix):
@@ -29,5 +36,5 @@ def let_go_of_closed_widgets(at, prefix="mv_tag_"):
             try:
                 element.value
             except KeyError:
-                at.session_state[key] = gone_value
+                at.session_state[key] = gone_value(element)
     return at

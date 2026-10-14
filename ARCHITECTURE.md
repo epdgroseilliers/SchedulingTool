@@ -37,8 +37,11 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 fields, the PSE chain a link implies (generator, MAG,
                 load), that same chain written as the opening path string
                 for the scheduler chat (??-ABEX-MAG001-BPAT-??), the
-                control area a market end implies, whether an OASIS
-                reservation still covers a flow date, what must
+                control area a market end implies — and, for the one
+                market with a convention on file, the Market cell, header
+                and Sink cell that end settles too — whether an OASIS
+                reservation still covers a flow date, who still has to tag
+                a link (TAG_STATES, which the board colours by), what must
                 be filled in before one can be written, and how the desk
                 names its files and day folders. The
                 market-name -> PSE lookup is passed in, not imported, so
@@ -47,11 +50,13 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 OATI reduced to a route "recipe" — a signature identical
                 for two tags that differ only in date, MW and reservation
                 number, plus the grouping over it — and, for "Lookup old
-                tags", tag_query (what a live tag's market path and GCA/LCA
-                say to search for, with a market end's control area settled
-                rather than guessed), rank_recipes (recipes sharing a
-                counterparty, and that settled area, with that query) and
-                the endpoints_of/chain_summary/wire_summary a route is
+                tags", tag_query (what a live tag's market path, points and
+                GCA/LCA say to search for, with a market end's control area
+                settled rather than guessed), rank_recipes (recipes sharing a
+                counterparty, and that settled area, with that query —
+                scoring each end on its Source/Sink point where the tag names
+                one, and on its control area only where it doesn't) and
+                the endpoints_of/points_of/chain_summary/wire_summary a route is
                 shown by — between them carrying everything the signature
                 groups on, so two routes never read alike. The transmission
                 product is in none of it: that is the day's paperwork, not
@@ -94,14 +99,21 @@ ui/           Streamlit rendering, one module per page section. Each
                    independent link.
     filters.py     Flow date, source/PSE/POR-POD, Refresh, Restore hidden.
     board.py       The adapter for the trade_board component: legs+links ->
-                   its JSON payload, and its events -> state changes.
+                   its JSON payload, and its events -> state changes. A wire
+                   carries its link's tagging state, which is the one thing
+                   about it neither leg implies — and the board revision
+                   carries it too, or a link just marked tagged would keep
+                   its old colour until something else moved.
     links.py       The schedule popup (create and edit are one modal) and
                    the detail strip under the board. Who/where, the hours
                    and the path string full width; under them the route
                    lookup and the tag fields side by side, the latter behind
                    an expander — open on a link clicked, shut on one being
-                   drawn. Widens the modal past st.dialog's own sizes the
-                   way bidgrid.py does.
+                   drawn; Generate in the action row at the foot. Widens
+                   the modal past st.dialog's own sizes the way bidgrid.py
+                   does, and packs it (_TIGHTEN) so the whole tag fits on
+                   one screen without scrolling — loosely enough to still
+                   read as sections.
     bidfile.py     The dialog around the bid-file builder, opened by a plain
                    click on a market chip (dragging it still starts a link)
                    — SWPW only so far: the caption, what doesn't reconcile,
@@ -117,9 +129,16 @@ ui/           Streamlit rendering, one module per page section. Each
                    it, "Lookup old tags" against the OATI corpus, display-
                    only until its own "Use this route" button is pressed
                    (render_tag_lookup, _apply_recipe); and behind the
-                   expander the fields a tag needs that the board can't know
-                   plus Generate (render_tag). The link supplies the
-                   schedule; nothing here asks for it.
+                   expander the fields a tag needs that the board can't
+                   know (render_tag). The link supplies the schedule;
+                   nothing here asks for it; the radio for who still has
+                   to tag the link (render_tag_state) is up in the popup's
+                   header, since it is as true of a link MAG never tags.
+                   Each editor is sized to the
+                   rows it holds (table_height) so none is ever scrolled,
+                   and the OASIS path lookup runs both before and after
+                   the transmission editor — see its comment for the
+                   browser-only trap that buys.
     widgets.py     The one-row, HE1..HE24 hour editor — the link schedule
                    popup's (links.py). The bid-file builder has its own
                    component.
@@ -179,7 +198,10 @@ components/   Streamlit custom components — the one place in the repo that
   trade_board/   The Scheduling View's canvas: movable squares, drag-to-link,
                  clickable link lines. One static index.html speaking the
                  component postMessage protocol — no npm build step. Knows
-                 nothing about trades; ui.scheduling.board translates.
+                 nothing about trades; ui.scheduling.board translates. A
+                 line into a market chip drops into it from above rather
+                 than arriving from the side (wirePath), and its colour is
+                 the tagging state it was handed.
   bid_grid/      The bid-file builder's table: both sides at once, hours down
                  the index, a three-level header (counterparty > GCA/LCA >
                  MW & Price) with a + on each code cell that splits it.

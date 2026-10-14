@@ -130,6 +130,31 @@ class TestWires:
         assert [w["link_id"] for w in wires] == ["L1"]
 
 
+class TestWhoStillHasToTagEachLink:
+    """The one thing a wire carries that the two legs it joins don't imply.
+    The board colours the line by it — see components/trade_board."""
+
+    LINK = Link("L1", "db:1", "db:2", {7: 60.0}, FLOW)
+
+    def test_a_wire_carries_its_links_state(self):
+        _, _, wires = build_payload(
+            [BUY_A, SELL_B], [self.LINK], None, set(), {"L1": "tagged"}
+        )
+        assert wires[0]["state"] == "tagged"
+
+    def test_and_says_it_in_words_too(self):
+        # The colour alone says which of the three it is only once you have
+        # learnt the three; the tooltip never needs learning.
+        _, _, wires = build_payload(
+            [BUY_A, SELL_B], [self.LINK], None, set(), {"L1": "counterparty"}
+        )
+        assert "Counterparty tags it" in wires[0]["label"]
+
+    def test_a_link_nobody_has_opened_is_one_mag_still_has_to_tag(self):
+        _, _, wires = build_payload([BUY_A, SELL_B], [self.LINK], None, set())
+        assert wires[0]["state"] == "mag"
+
+
 class TestRevision:
     def test_it_changes_when_the_links_change(self):
         before = board_revision(FLOW, [BUY_A, SELL_B], [], None)
@@ -146,6 +171,14 @@ class TestRevision:
     def test_it_changes_with_the_flow_date(self):
         assert board_revision(FLOW, [BUY_A], [], None) != board_revision(
             date(2026, 9, 19), [BUY_A], [], None
+        )
+
+    def test_it_changes_when_a_link_is_marked_tagged(self):
+        # Or the line would keep its old colour until something else
+        # happened to move — the component only rebuilds on this.
+        link = [Link("L1", "db:1", "db:2", {7: 10.0}, FLOW)]
+        assert board_revision(FLOW, [BUY_A, SELL_B], link, None) != board_revision(
+            FLOW, [BUY_A, SELL_B], link, None, {"L1": "tagged"}
         )
 
     def test_it_is_stable_across_identical_boards(self):

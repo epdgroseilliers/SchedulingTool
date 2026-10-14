@@ -323,6 +323,7 @@ class TestWhatTheLinkFillsIn:
         # show the old schedule — the same popup holds both.
         at.session_state["mv_links"][0].mw_by_hour = {7: 5.0}
         at = _emit(_in_dialog(at), {"type": "link_click", "link_id": "L1"})
+        at = let_go_of_closed_widgets(at)
         assert _tag(_in_dialog(at).run())["mw_by_hour"] == {7: 5.0}
 
     def test_the_two_counterparties_name_the_tag_and_its_markets(self):
@@ -764,6 +765,90 @@ class TestALinkIntoAMarket:
         assert "CISO_HUB" not in shown
 
 
+class TestADeletionThatHasToStick:
+    def test_a_path_cell_emptied_by_hand_stays_empty(self):
+        # The lookup fills a blank Path once. After that the cell is the
+        # scheduler's: a path that comes back on the next rerun is not a
+        # lookup being helpful, it is a lookup overruling someone.
+        at = _type_reservation(_fill(_tagging()), "109267045")
+        assert _transmissions(at)[0]["path"]
+        at.session_state[_transmission_key(at)] = {
+            "edited_rows": {0: {"path": ""}}, "deleted_rows": [], "added_rows": [],
+        }
+        at = _in_dialog(at).run()
+        assert _transmissions(at)[0]["path"] == ""
+        # And stays empty through whatever is touched next.
+        at = _fill(at, gca="GWA2")
+        assert _transmissions(at)[0]["path"] == ""
+
+
+class TestWhoStillHasToTagThisLink:
+    """Three states, set by hand in the popup and read by the board, which
+    colours each link's line by it. Nothing infers them yet."""
+
+    def _radio(self, at, link_id="L1"):
+        return at.radio(f"mv_tag_{link_id}_state")
+
+    def test_a_link_opens_as_one_mag_still_has_to_tag(self):
+        at = _tagging()
+        assert _tag(at)["state"] == "mag"
+        assert self._radio(at).value == "mag"
+
+    def test_the_three_are_offered_in_words(self):
+        at = _tagging()
+        assert self._radio(at).options == [
+            "MAG tags it", "Counterparty tags it", "Tagged"
+        ]
+
+    def test_choosing_one_lands_on_the_tag(self):
+        at = _tagging()
+        self._radio(at).set_value("tagged")
+        at = _in_dialog(at).run()
+        assert _tag(at)["state"] == "tagged"
+
+    def test_a_link_still_being_drawn_carries_its_state_onto_itself(self):
+        at = _drawing()
+        at.radio(f"mv_tag_{PENDING_TAG}_state").set_value("counterparty")
+        at = _in_dialog(at).run()
+        at = _click(at, "Create link")
+        assert _tag(at)["state"] == "counterparty"
+
+
+class TestWhatSinkingIntoSwpwFillsIn:
+    """The desk's own convention for a link sinking into SWPW: SPP in the
+    Market cell, SWPW as the LCA, the delivery point named in the header
+    and the Sink cell left empty. See domain.tags.MARKET_SINK_FIELDS."""
+
+    def _into_swpw(self):
+        return _tagging(trades=(BUY_LEG,), frm="session:0", market="SWPW")
+
+    def test_the_header_names_the_delivery_point(self):
+        assert _tag(self._into_swpw())["label"] == "AZPS-SWPW(CRSP)"
+
+    def test_the_market_cell_is_the_pool_and_the_lca_the_market(self):
+        tag = _tag(self._into_swpw())
+        assert tag["sink"]["market"] == "SPP"
+        assert tag["sink"]["lca"] == "SWPW"
+
+    def test_and_the_sink_cell_is_left_for_nobody(self):
+        at = self._into_swpw()
+        assert _tag(at)["sink"]["point"] == ""
+        assert at.text_input("mv_tag_L1_Sink_point").value == ""
+
+    def test_an_old_route_does_not_fill_it_either(self, monkeypatch):
+        # The route is a guess; the market end is not.
+        into_swpw = dict(HISTORICAL_TAG, lca="SWPW")
+        into_swpw["market_path"] = [
+            {"pse": "APS01", "product": "G-F", "contracts": ""},
+            {"pse": "MAG001", "product": "L", "contracts": ""},
+        ]
+        _stub_history(monkeypatch, [into_swpw])
+        at = _use_route(_click(self._into_swpw(), "Lookup old tags"))
+        assert _tag(at)["sink"]["point"] == ""
+        # The rest of the route still landed.
+        assert _tag(at)["source"]["point"] == "RIMROCK"
+
+
 class TestWhatARouteCardShows:
     def test_where_the_power_starts_and_ends(self, monkeypatch):
         _stub_history(monkeypatch, [HISTORICAL_TAG])
@@ -793,3 +878,117 @@ class TestWhatARouteCardShows:
         assert any(
             "APS01 (G-F) > MAG001 > BPAP01 (L)" in c.value for c in at.caption
         )
+
+
+class TestThePopupStaysOnOneScreen:
+    """The popup is packed to fit without scrolling — see
+    ui.scheduling.links._TIGHTEN. Height itself is a browser question and
+    is checked there; what's checked here is the rule that made the last
+    three attempts at it look tighter and render broken."""
+
+    def _tighten(self):
+        from ui.scheduling.links import _TIGHTEN
+
+        return _TIGHTEN
+
+    @pytest.mark.parametrize("zeroed", ["margin:0", "margin-bottom:0", "min-height:0"])
+    def test_no_text_element_has_its_spacing_zeroed(self, zeroed):
+        # Streamlit sizes a label, caption or markdown container from
+        # exactly these, so zeroing one collapses the container to nothing
+        # while its text still paints — it lands on top of the next
+        # element. It measures *shorter*, which is the trap.
+        for line in self._tighten().splitlines():
+            if zeroed not in line.replace(" ", ""):
+                continue
+            assert not any(
+                text in line
+                for text in ("WidgetLabel", "stCaptionContainer", "stMarkdownContainer")
+            ), line
+
+    def test_generate_sits_in_the_action_row_not_the_tag_fields(self):
+        # It costs the tag column nothing down there, and the action row
+        # had the space — see ui.scheduling.tag.render_generate.
+        at = _tagging()
+        assert [b for b in at.button if b.label == "Generate tag file"]
+        assert not [
+            b for b in _tag_expander(at).button if b.label == "Generate tag file"
+        ]
+
+    def test_but_what_stops_it_being_written_stays_with_the_fields(self):
+        at = _tagging()
+        assert [e for e in _tag_expander(at).error if "GCA is required" in e.value]
+
+
+class TestAnEditorShowsEveryRowItHolds:
+    """A wheel you can't see is a wheel you forget to check, so the
+    editors grow with their rows and the popup grows with them — rather
+    than hiding the last one inside a fixed frame."""
+
+    def _height(self, rows):
+        from ui.scheduling.tag import table_height
+
+        return table_height([{"a": 1}] * rows)
+
+    def test_a_long_block_is_taller_than_a_short_one(self):
+        assert self._height(8) > self._height(4) > self._height(3)
+
+    def test_each_extra_row_costs_exactly_one_row(self):
+        from ui.scheduling.tag import ROW_HEIGHT
+
+        assert self._height(6) - self._height(5) == ROW_HEIGHT
+
+    def test_it_leaves_room_for_the_blank_row_you_add_with(self):
+        from ui.scheduling.tag import HEADER_HEIGHT, ROW_HEIGHT
+
+        # Header, four rows, and the one a dynamic editor keeps at the end.
+        assert self._height(4) == HEADER_HEIGHT + 5 * ROW_HEIGHT
+
+    def test_an_empty_block_is_still_worth_typing_into(self):
+        from ui.scheduling.tag import MIN_TABLE_ROWS
+
+        assert self._height(0) == self._height(MIN_TABLE_ROWS - 1)
+
+    def test_the_transmission_block_grows_with_a_route(self, monkeypatch):
+        from ui.scheduling.tag import table_height
+
+        _stub_history(monkeypatch, [HISTORICAL_TAG])
+        at = _tagging()
+        before = table_height(_transmissions(at))
+        at = _use_route(_click(at, "Lookup old tags"))
+        assert table_height(_transmissions(at)) >= before
+        assert len(_transmissions(at)) >= 2
+
+
+
+class TestTheOasisLookupRunsBeforeTheEditorDraws:
+    """A guard for a trap no AppTest can see.
+
+    Filling a path after the editor has drawn needs a rerun to show, and a
+    rerun on the run that *opens the tag expander* strands every field in
+    it: those inputs mount for the first time, the run is thrown away, and
+    the browser keeps the empty boxes while the server believes they hold
+    the route's values. Server and screen then disagree permanently —
+    which AppTest cannot reproduce, because AppTest *is* the server and
+    its state was right the whole time. Checked in Chrome, kept here.
+    """
+
+    def _render_tag_source(self):
+        import inspect
+
+        from ui.scheduling.tag import render_tag
+
+        return inspect.getsource(render_tag)
+
+    def test_a_path_is_looked_up_before_the_transmission_editor(self):
+        source = self._render_tag_source()
+        first_lookup = source.index("_fill_paths_from_oasis(")
+        editor = source.index('"transmissions",')
+        assert first_lookup < editor, (
+            "the OASIS lookup must run before the transmission editor draws, "
+            "or applying a route strands the fields beside it"
+        )
+
+    def test_and_again_after_it_for_a_number_just_typed(self):
+        # The second call is what catches a reservation the scheduler
+        # typed, which only reaches the tag as the editor returns.
+        assert self._render_tag_source().count("_fill_paths_from_oasis(") == 2

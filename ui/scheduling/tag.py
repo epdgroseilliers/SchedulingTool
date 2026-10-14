@@ -53,18 +53,33 @@ from domain.tag_recipes import (
 )
 from domain.tags import (
     CC_TYPES,
+    DEFAULT_TAG_STATE,
     PRODUCTS,
+    TAG_STATES,
     lookupable_aref,
+    market_sink_fields,
     reservation_covers,
     tag_errors,
 )
-from ui.scheduling.state import LINK_DIALOG, arm_dialog, ensure_tag
+from ui.scheduling.state import LINK_DIALOG, arm_dialog, ensure_tag, tag_for
 from ui.session import widget_defaults
 
 #: Height of each list editor, in pixels: its header plus four rows — one
 #: more than an ordinary market path needs, so there's always a blank row
-#: to type into without the table growing under the one below it.
-TABLE_HEIGHT = 178
+#: to type into without the table growing under the one below it. Rows are
+#: shorter than Streamlit's default because the popup is sized to hold
+#: everything at once without scrolling (see ui.scheduling.links).
+ROW_HEIGHT = 28
+
+#: Rows an editor shows when it holds fewer than that — a tag opens with
+#: an empty transmission block, and a one-line slot is a worse thing to
+#: type into than a short table.
+MIN_TABLE_ROWS = 3
+
+#: An editor's header row, which `row_height` doesn't govern — measured in
+#: Chrome at 35px, with three more for the frame. Short by even a few and
+#: the last row keeps a scrollbar, which is the whole thing this avoids.
+HEADER_HEIGHT = 38
 
 #: How far back "Lookup old tags" searches. A rolling window rather than a
 #: fixed start — the same one the reservation lookup's own 92%/median-one-day
@@ -127,10 +142,26 @@ def _table(container, link_id, name, rows, columns, column_config):
         num_rows="dynamic",
         hide_index=True,
         width="stretch",
-        height=TABLE_HEIGHT,
+        height=table_height(rows),
+        row_height=ROW_HEIGHT,
         column_config=column_config,
     )
     return edited.to_dict("records")
+
+
+def table_height(rows):
+    """Tall enough to show every row this editor holds, with no scrollbar.
+
+    A market path or a transmission block you have to scroll is one you
+    can misread — a wheel you can't see is a wheel you forget to check —
+    so the editor grows and the popup grows with it, rather than the rows
+    hiding inside a fixed frame.
+
+    What it has to fit: the header, every row, and the blank one a dynamic
+    editor keeps at the bottom to add with.
+    """
+    shown = max(len(rows or []) + 1, MIN_TABLE_ROWS)
+    return HEADER_HEIGHT + shown * ROW_HEIGHT
 
 
 def _widget_key(link_id, name):
@@ -161,33 +192,61 @@ def _cell(value):
     return str(value).strip()
 
 
-def _render_half(container, part, link_id, side, ca_field, ca_label, point_label):
-    """One half of the sheet. No PSE field: that end's PSE is the end of the
-    market path — see domain.tags.source_pse.
+def _render_fields(container, tag, link_id):
+    """Everything the sheet asks for that isn't a list, in three rows.
 
-    Stacked rather than paired two to a row: the two halves already sit
-    side by side inside the popup's tag column, and Streamlit allows
-    columns only one level deep — a row in here would be the second.
+    Not a head row plus two blocks of five stacked fields, which is the
+    same twelve boxes in nearly twice the height — the popup is sized to
+    show the whole tag at once (see ui.scheduling.links), and that is what
+    used to make it scroll. Each label names its own side rather than
+    leaning on a heading above it.
+
+    No PSE field on either half: that end's PSE is the end of the market
+    path — see domain.tags.source_pse. And no caption repeating the flow
+    date, the hours and the MW: they are on screen in the same popup, a few
+    centimetres up, and the sheet carries that schedule on both halves
+    whether or not a line here says so.
     """
-    container.markdown(f"**{side}**")
-    _text(container, part, "market", "Market", link_id, f"{side}_market")
-    _text(container, part, ca_field, ca_label, link_id, f"{side}_{ca_field}")
-    _text(container, part, "point", point_label, link_id, f"{side}_point")
-    _text(container, part, "contract", "Contract", link_id, f"{side}_contract")
-    _text(container, part, "comment", "PSE comment", link_id, f"{side}_comment")
+    source, sink = tag["source"], tag["sink"]
+    row = container.columns(6)
+    _text(row[0], tag, "name", "Tag name", link_id, "name")
+    _text(row[1], tag, "label", "Header", link_id, "label")
+    _text(row[2], source, "market", "Source market", link_id, "Source_market")
+    _text(row[3], source, "gca", "GCA", link_id, "Source_gca")
+    _text(row[4], sink, "market", "Sink market", link_id, "Sink_market")
+    _text(row[5], sink, "lca", "LCA", link_id, "Sink_lca")
+
+    row = container.columns(4)
+    _text(row[0], source, "point", "Source", link_id, "Source_point")
+    _text(row[1], source, "contract", "Source contract", link_id, "Source_contract")
+    _text(row[2], sink, "point", "Sink", link_id, "Sink_point")
+    _text(row[3], sink, "contract", "Sink contract", link_id, "Sink_contract")
+
+    row = container.columns(2)
+    _text(row[0], source, "comment", "Source PSE comment", link_id, "Source_comment")
+    _text(row[1], sink, "comment", "Sink PSE comment", link_id, "Sink_comment")
 
 
-def _render_generate(container, tag, link_id):
-    errors = tag_errors(tag)
-    if errors:
-        # One box rather than one per message, as in the bid-file builder:
-        # most of these are "not filled in yet" on a tag just opened.
-        container.error("\n".join(f"- {error}" for error in errors))
+def render_generate(container, tag_key):
+    """Generate, and the overwrite tick beside it — in the popup's own
+    action row, next to Create link and Cancel.
 
+    Down there rather than at the foot of the tag fields because it is the
+    same kind of thing as the buttons it now sits with, and because the tag
+    column is what decides whether the popup fits on a screen: a block that
+    reads just as well in a row that was half empty costs nothing there.
+
+    Where the file goes is on the button's tooltip. What *stops* it being
+    written stays up in the fields (render_tag), next to the boxes that
+    would fix it.
+    """
+    tag = tag_for(tag_key)
+    if tag is None:
+        return
+    link_id = tag_key
     path = tagfile.target_path(tag)
-    container.caption(
-        f"Writes `{path.name}` to `{path.parent}`"
-        + ("  ·  test folder, not the day's own" if tagfile.TEST_MODE else "")
+    where = f"Writes {path.name} to {path.parent}" + (
+        "  ·  test folder, not the day's own" if tagfile.TEST_MODE else ""
     )
 
     left, right = container.columns([1, 1], vertical_alignment="center")
@@ -198,7 +257,8 @@ def _render_generate(container, tag, link_id):
         "Generate tag file",
         type="primary",
         width="stretch",
-        disabled=bool(errors),
+        disabled=bool(tag_errors(tag)),
+        help=where,
         key=_key(link_id, "generate"),
     ):
         try:
@@ -225,24 +285,29 @@ def _fill_paths_from_oasis(tag, link_id):
 
     Three things it deliberately will not do:
 
-    - **Touch a path the scheduler wrote.** Only a blank cell is filled, or
-      one this lookup itself put there for a reference since changed. What
-      was typed by hand stays.
+    - **Fill the same reference twice.** A blank Path is filled once per
+      reference; empty it and it stays empty, because a cell that comes
+      back on the next rerun is not a lookup being helpful, it is a lookup
+      overruling someone. (Once per *reference*, not per row: no tag in the
+      desk's own history — 0 of 2,685 — carries the same reservation number
+      on two transmission segments, so the two amount to the same thing.)
+      What it does still do is *correct* a path of its own that has gone
+      stale: change the number beside one and the path follows, since
+      nobody typed it and it now stands behind nothing.
     - **Ask about anything that isn't a reference.** `FCATBTEP` and `GF` go
       in the same column and are left alone — see domain.tags.lookupable_aref.
     - **Treat "not found" as a problem.** The summary holds *our* reservations;
       a segment wheeled on a counterparty's is not in it, which is normal on
       about three references in ten.
     """
-    ours = st.session_state.setdefault(_key(link_id, "oasis_paths"), {})
+    written = st.session_state.setdefault(_key(link_id, "oasis_paths"), {})
     resolved, unknown, changed = [], [], False
 
     # A circuit breaker, not a rule. Each fill asks for a rerun, so anything
     # that made a fill repeat would spin the page rather than fail — and a
     # spinning browser is the worst way for this to go wrong. The rename in
-    # _bump is what actually makes a fill settle (take it out and this does
-    # loop, which is why it is not merely a nicety); this bounds the damage
-    # if that ever stops being true. A tag has at most thirteen transmission
+    # _bump is what actually makes a fill settle; this bounds the damage if
+    # that ever stops being true. A tag has at most thirteen transmission
     # rows, so it cannot bite in use.
     fills = st.session_state.get(_key(link_id, "oasis_fills"), 0)
     if fills > 40:
@@ -257,12 +322,14 @@ def _fill_paths_from_oasis(tag, link_id):
             unknown.append(aref)
             continue
         resolved.append(found)
-        if path and path not in ours.values():
+        if path and path not in written.values():
             continue  # the scheduler's own wording wins
+        if not path and aref in written:
+            continue  # we filled this one once and they emptied it
         if path != found["path"]:
             row["path"] = found["path"]
             changed = True
-        ours[aref] = found["path"]
+        written[aref] = found["path"]
 
     if changed:
         st.session_state[_key(link_id, "oasis_fills")] = fills + 1
@@ -272,12 +339,18 @@ def _fill_paths_from_oasis(tag, link_id):
 def _render_oasis_note(container, resolved, unknown):
     """What the lookup found, in one line each — the capacity especially,
     since tagging more MW than the reservation grants is the kind of error
-    that only surfaces days later."""
+    that only surfaces days later.
+
+    It says what the reservation *is*, not what the lookup did with it: the
+    Path cell is filled once and is the scheduler's afterwards (see
+    _fill_paths_from_oasis), so a line claiming the path had just been
+    filled would be wrong every run but the first.
+    """
     for found in resolved:
         granted = f"{found['granted_mw']:,.0f} MW" if found["granted_mw"] else "—"
         container.caption(
             f"`{found['aref']}` · {found['provider']} · {found['ts_class']} · "
-            f"{found['status'].lower()} · {granted} granted · path filled from OASIS"
+            f"{found['status'].lower()} · {granted} granted"
         )
     for aref in unknown:
         container.caption(
@@ -324,6 +397,45 @@ def _take_path_entry(tag, link_id):
     return True
 
 
+def render_tag_state(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
+    """Who still has to tag this link — MAG, the counterparty, or nobody
+    because it's done.
+
+    Up beside the who-and-where line rather than down among the tag fields,
+    because it is the one thing here that is just as true of a link MAG
+    never tags at all — and because it is what the board colours its line
+    by, which is the whole point of asking (ui.scheduling.board). Set by
+    hand: nothing on the board can work it out yet.
+
+    The rerun is deliberate and is why this doesn't just write the tag and
+    carry on. A dialog is a fragment, so a widget inside it reruns only the
+    dialog — the board behind it would keep the old colour until the popup
+    was closed. Re-arming first is what keeps the popup open across it, the
+    same way the OASIS fill does (see render_tag).
+    """
+    tag = ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date)
+    options = list(TAG_STATES)
+    current = tag.get("state") or DEFAULT_TAG_STATE
+    key = _widget_key(tag_key, "state")
+    chosen = container.radio(
+        "Who tags this link",
+        options,
+        # .get, not [], and the guard below to match: a state this build
+        # doesn't know is something to show and ignore, not to crash on.
+        format_func=lambda slug: TAG_STATES.get(slug, slug),
+        horizontal=True,
+        label_visibility="collapsed",
+        key=key,
+        **widget_defaults(
+            key, index=options.index(current) if current in options else 0
+        ),
+    )
+    if chosen in TAG_STATES and chosen != current:
+        tag["state"] = chosen
+        arm_dialog(LINK_DIALOG)
+        st.rerun()
+
+
 def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
     """The path as it stands on chat, and the box to paste the next one into.
 
@@ -353,7 +465,7 @@ def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_d
     )
 
 
-def _apply_recipe(tag, link_id, match):
+def _apply_recipe(tag, link_id, match, sell_leg=None):
     """Copy one historical route onto this tag: its control areas, its
     source/sink points, its market path and its transmission reservation
     numbers — which is already enough for the OASIS lookup further down
@@ -362,7 +474,10 @@ def _apply_recipe(tag, link_id, match):
 
     Deliberately not touched: the tag's name and header, its carbon copy
     (OATI carries none), and source/sink contract — nothing in the corpus
-    maps to any of them.
+    maps to any of them. Nor a cell the market end itself settles: a link
+    sinking into SWPW leaves the Sink cell empty whatever an old route put
+    in it (domain.tags.MARKET_SINK_FIELDS), because that end is known and
+    the route is only a guess.
 
     No rerun is needed here, unlike the OASIS fill. render_tag_lookup runs
     before render_tag's own field and table calls in the popup's own
@@ -374,6 +489,7 @@ def _apply_recipe(tag, link_id, match):
     sample = match["samples"][0] if match["samples"] else None
     if sample is None:
         return
+    settled = market_sink_fields(sell_leg)
 
     if match["gca"]:
         tag["source"]["gca"] = match["gca"]
@@ -385,7 +501,11 @@ def _apply_recipe(tag, link_id, match):
         if segment["type"] == "G" and segment.get("por_name"):
             tag["source"]["point"] = segment["por_name"]
             _bump(link_id, "Source_point")
-        elif segment["type"] == "L" and segment.get("pod_name"):
+        elif (
+            segment["type"] == "L"
+            and segment.get("pod_name")
+            and "point" not in settled
+        ):
             tag["sink"]["point"] = segment["pod_name"]
             _bump(link_id, "Sink_point")
 
@@ -514,14 +634,17 @@ def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_da
         return
 
     for match in matches:
-        with container.container(border=True):
+        # Keyed so the popup's CSS can find it: Streamlit turns a
+        # container key into an `st-key-...` class, and the bordered box's
+        # own class is a generated one that changes between releases.
+        with container.container(border=True, key=f"route_{link_id}_{match['recipe_id']}"):
             cols = st.columns([5, 2], vertical_alignment="center")
             _render_match(cols[0], match)
             if cols[1].button(
                 "Use this route", key=_key(link_id, f"use_{match['recipe_id']}")
             ):
                 st.session_state[_key(link_id, "lookup_note")] = _apply_recipe(
-                    tag, link_id, match
+                    tag, link_id, match, sell_leg
                 )
                 st.session_state[_key(link_id, "expander_open")] = True
 
@@ -574,7 +697,7 @@ def recipe_was_applied(tag_key):
     return bool(st.session_state.get(_key(tag_key, "expander_open")))
 
 
-def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, he_label):
+def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
     """The tag fields, in the right-hand half of the popup. The link
     supplies the schedule; everything collected here is written straight
     into its tag as it's typed.
@@ -589,19 +712,12 @@ def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, he_
     tag = ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date)
     link_id = tag_key
 
-    head = container.columns([2, 2, 3], vertical_alignment="bottom")
-    _text(head[0], tag, "name", "Tag name", link_id, "name")
-    _text(head[1], tag, "label", "Header", link_id, "label")
-    head[2].caption(
-        f"{flow_date} · HE {he_label} · {sum(mw_by_hour.values()):,.0f} MWh, "
-        "from the schedule above — both halves of the sheet carry it."
-    )
+    _render_fields(container, tag, link_id)
 
-    source, sink = container.columns(2)
-    _render_half(source, tag["source"], link_id, "Source", "gca", "GCA", "Source")
-    _render_half(sink, tag["sink"], link_id, "Sink", "lca", "LCA", "Sink")
-
-    path_col, cc_col = container.columns([3, 2])
+    # All three editors in one row. Stacked they cost the popup twice the
+    # height for the same content, and the popup is sized to show the whole
+    # tag at once (see ui.scheduling.links).
+    path_col, cc_col, trans_col = container.columns([5, 4, 9])
     path_col.markdown("**Market path** — generator first, load last")
     tag["market_path"] = _table(
         path_col,
@@ -617,11 +733,6 @@ def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, he_
             "contract": st.column_config.TextColumn("Contract"),
         },
     )
-    path_col.caption(
-        "The sheet's two PSE cells are this path's own ends — nothing to "
-        "type twice."
-    )
-
     cc_col.markdown("**Carbon copy**")
     tag["carbon_copy"] = _table(
         cc_col,
@@ -637,21 +748,41 @@ def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, he_
         },
     )
 
-    container.markdown(
-        "**Transmission** — type the reservation, the path follows"
-    )
+    # Looked up twice, for two different moments.
+    #
+    # **Before the editor draws**, so a path filled from a number that
+    # arrived in Python — a route just applied — lands without a rerun. A
+    # rerun on that run strands every field the route filled in beside it:
+    # those boxes mount for the first time as the tag expander opens, the
+    # run is then thrown away, and the browser keeps the empty inputs it
+    # first painted while the server goes on believing they hold the
+    # route's values. Server and screen disagree, permanently, and only in
+    # a real browser — which is why this is written down rather than left
+    # to be rediscovered.
+    _, _, changed = _fill_paths_from_oasis(tag, link_id)
+    if changed:
+        _bump(link_id, "transmissions")
+
+    trans_col.markdown("**Transmission** — type the reservation, path follows")
     tag["transmissions"] = _table(
-        container,
+        trans_col,
         link_id,
         "transmissions",
         tag["transmissions"],
         ("path", "reservation", "mw"),
         {
-            "path": st.column_config.TextColumn("Path", width="large"),
+            # Medium, not large: "# trans" is the column a scheduler
+            # actually types in, and a large Path pushes it off the side
+            # of the editor.
+            "path": st.column_config.TextColumn("Path", width="medium"),
             "reservation": st.column_config.TextColumn("# trans", width="small"),
             "mw": st.column_config.TextColumn("MW", width="small"),
         },
     )
+    # **And after it draws**, for a number the scheduler has just typed —
+    # which only reaches the tag as the editor returns. That one does need
+    # a rerun to be seen, and can safely have one: by then no field has
+    # been created on this run, so there is nothing to strand.
     resolved, unknown, changed = _fill_paths_from_oasis(tag, link_id)
     if changed:
         # A fresh widget so the filled path is what the editor shows — see
@@ -660,7 +791,12 @@ def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, he_
         _bump(link_id, "transmissions")
         arm_dialog(LINK_DIALOG)
         st.rerun()
-    _render_oasis_note(container, resolved, unknown)
+    _render_oasis_note(trans_col, resolved, unknown)
 
-    container.divider()
-    _render_generate(container, tag, link_id)
+    errors = tag_errors(tag)
+    if errors:
+        # One box rather than one per message, as in the bid-file builder:
+        # most of these are "not filled in yet" on a tag just opened. Here,
+        # beside the fields that would fix them — Generate itself is down
+        # in the popup's action row (render_generate).
+        container.error("\n".join(f"- {error}" for error in errors))

@@ -29,7 +29,7 @@ from domain.matching import (
     parse_market_key,
     suggest_allocation,
 )
-from domain.tags import default_tag
+from domain.tags import DEFAULT_TAG_STATE, default_tag
 from domain.trade import session_horizon
 
 SOURCE_DB = "Database"
@@ -598,6 +598,22 @@ def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
     return tag
 
 
+def link_state(link_id):
+    """Who still has to tag this link — see domain.tags.TAG_STATES.
+
+    Read off the tag, which is where the popup's radio writes it, so a link
+    nobody has opened yet answers the default rather than nothing. The board
+    colours its line by this (ui.scheduling.board).
+    """
+    tag = st.session_state.mv_tags.get(link_id) or {}
+    return tag.get("state") or DEFAULT_TAG_STATE
+
+
+def link_states(links):
+    """{link_id: state} for the board's payload."""
+    return {ln.link_id: link_state(ln.link_id) for ln in links}
+
+
 def rename_tag(old_key, new_key):
     """Move a tag onto its link once that link exists.
 
@@ -710,6 +726,8 @@ __all__ = [
     "highlighted_keys",
     "init_matching_state",
     "leg_or_market",
+    "link_state",
+    "link_states",
     "legs_by_key",
     "load_legs",
     "market_leg",

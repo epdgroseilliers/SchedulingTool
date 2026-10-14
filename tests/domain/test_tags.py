@@ -8,6 +8,7 @@ import pytest
 
 from domain.matching import BUY, SELL, TradeLeg
 from domain.tags import (
+    DEFAULT_TAG_STATE,
     GENERATOR_PRODUCT,
     PATH_UNKNOWN,
     LOAD_PRODUCT,
@@ -23,6 +24,8 @@ from domain.tags import (
     lookupable_aref,
     market_path_rows,
     safe_name,
+    TAG_STATES,
+    market_sink_fields,
     sink_pse,
     source_pse,
     tag_errors,
@@ -212,6 +215,69 @@ class TestWhatALinkFillsIn:
         assert tag["sink"]["lca"] == ""
         assert tag["transmissions"] == []
         assert tag["carbon_copy"] == []
+
+
+class TestWhatAMarketEndSettlesByItself:
+    """A market end is not a guess. Selling into SWPW *is* MAG sinking the
+    power there, so the cells that follow from it are filled in before
+    anyone types — and the route lookup is already forbidden from
+    contradicting them (see domain.tag_recipes.tag_query)."""
+
+    def test_selling_into_a_market_settles_the_lca(self):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["sink"]["lca"] == "SWPW"
+
+    def test_buying_from_one_settles_the_gca(self):
+        tag = default_tag(
+            leg(BUY, "CAISO", source="market"), leg(SELL, "BPAT"), {1: 1.0}, FLOW
+        )
+        # CAISO tags as CISO — the one market whose control area isn't its
+        # own trading name.
+        assert tag["source"]["gca"] == "CISO"
+
+    def test_a_swpw_sink_writes_the_pool_in_the_market_cell(self):
+        # Not the scheduling point: the desk writes SPP there.
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["sink"]["market"] == "SPP"
+
+    def test_and_names_the_delivery_point_in_the_header_instead(self):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["label"] == "EPE-SWPW(CRSP)"
+
+    def test_leaving_the_sink_cell_empty(self):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["sink"]["point"] == ""
+        # And says so, so the route lookup knows not to fill it either.
+        assert "point" in market_sink_fields(leg(SELL, "SWPW", source="market"))
+
+    def test_a_market_with_no_convention_on_file_keeps_its_own_name(self):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "CAISO", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["sink"]["market"] == "CAISO"
+        assert tag["label"] == "SOURCE-SINK"
+
+    def test_a_counterparty_end_settles_nothing(self):
+        assert market_sink_fields(leg(SELL, "SWPW")) == {}
+
+
+class TestWhoStillHasToTagIt:
+    def test_a_link_starts_as_mags_to_tag(self):
+        # The most work rather than the least: a link nobody has looked at
+        # is one somebody still has to.
+        assert blank_tag()["state"] == DEFAULT_TAG_STATE
+        assert TAG_STATES[DEFAULT_TAG_STATE] == "MAG tags it"
+
+    def test_the_three_states_the_board_colours(self):
+        assert list(TAG_STATES) == ["mag", "counterparty", "tagged"]
 
 
 class TestTheOpeningPathString:

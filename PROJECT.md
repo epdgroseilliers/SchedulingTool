@@ -249,6 +249,30 @@ Clicking a square focuses it and dims everything not linked to it; clicking
 it again undims. **`×` on a square clears it off the board** — see
 *Hiding, not deleting*, below.
 
+**What a link line says.** Two things, both read without clicking anything.
+
+*Where it ends.* A line into a **market chip comes down into it from
+above**, not in from the side. Several links reaching the rail used to run
+along nearly the same path and converge on it, and which chip each one
+landed at was guesswork — on a board whose whole job is showing what is
+matched against what. The last stretch is vertical instead, so each line
+sits in its own chip's column where a trader reads it. Lines between two
+squares still run flat, which is right: both ends are in the same
+horizontal band.
+
+*Who still has to tag it.* **Blue** for a link MAG has to tag, **orange**
+for one the counterparty tags, **light grey** for one already tagged — the
+three states of `domain.tags.TAG_STATES`, carried on the wire and written
+into the tag (`state`). Blue is the ordinary link because the ordinary link
+is one MAG has to tag, and grey recedes because a tagged link is one nobody
+has to look at again. The state is **set by hand**, from a radio in the
+link popup's header line: nothing on the board can infer it yet — whether
+the counterparty tags into the market, who the PSE of record is, none of it
+is on the board — and inventing an answer would be worse than asking. The
+colour is live: changing it repaints the board behind the open popup,
+which needs an explicit app-scoped rerun because a dialog is a fragment and
+a widget inside one otherwise reruns only the dialog.
+
 **The flow date is remembered for the session.** The page opens on whatever
 date the trader was last looking at, and only falls back to tomorrow on the
 first visit. It has to be held *outside* widget state to do that: Streamlit
@@ -800,6 +824,19 @@ a year of the desk's own tags). A GCA or LCA merely *typed* stays a
 preference — it's a field still being filled in, and ruling every route out
 on a half-typed code helps nobody.
 
+**A Source or Sink point supersedes its own control area.** Once the tag
+names a point on one end, that end is scored on the point *instead of* the
+area — never on both. A point sits in exactly one control area, so matching
+on it is the same test sharpened, while the reverse doesn't hold: one area
+holds many plants, and a route out of the right area by the wrong plant is
+not the route being built. Scoring both would count one fact twice and let
+the area make up the difference. Each end decides independently, so a tag
+with a Source typed and no Sink goes by the point on one end and the LCA on
+the other. Both stay soft — the cells are still being filled in — and a
+market end is the exception that stays hard, since it names no point at all
+(the desk leaves that cell empty) and its control area is a fact about the
+link rather than a field.
+
 Together with the hard filter on sharing at least one counterparty — the one
 thing a query always has — that's what keeps the shortlist to routes this
 link could actually be.
@@ -838,18 +875,74 @@ moment a route is applied so there's something to see.
 
 ### The shape of the popup
 
-The hours and the path string run the full width; under them the route
-lookup and the tag fields sit side by side, because both are tall and
-stacking them is what made the popup scroll — together they cost the height
-of the taller one rather than the sum of the two. The modal is widened to
-1,600px with the same targeted CSS `ui/scheduling/bidgrid.py` uses on the
-bid-file one, since `st.dialog` offers only small and large and large is
-too narrow to put the two beside each other.
+**The whole tag fits on one screen.** Nothing here is behind a scrollbar on
+a 1080p display — measured in Chrome, not assumed:
 
-Streamlit allows columns **one level deep**, which is why the Source and
-Sink halves stack their five fields rather than pairing them two to a row:
-the halves are already a row inside the tag column, and a row inside them
-would be the second level.
+    link just drawn                718px -> 517
+    after a lookup, tag shut      1,518  -> 1,038
+    after Use this route, all open 1,988 -> 1,063
+
+The first pass at this came in a quarter shorter again and read as one
+undifferentiated block; the room that bought is spent on the gaps that
+tell one thing from the next.
+
+**An editor is never scrolled.** The market path and the transmission
+block are sized to the rows they hold — header, every row, and the blank
+one a dynamic editor keeps at the bottom to add with — and the popup grows
+with them (`ui.scheduling.tag.table_height`). A wheel you can't see is a
+wheel you forget to check. A route with more segments simply makes a
+taller popup: the ABEX one above is 1,063px, an EPE-SWPW route with twice
+the transmission rows is 1,128.
+
+Four things got it to that size. The modal is **widened to 1,600px** with the same
+targeted CSS `ui/scheduling/bidgrid.py` uses on the bid-file one, since
+`st.dialog` offers only small and large. The hours and the path string run
+the **full width**, and under them the route lookup and the tag fields sit
+**side by side** — both are tall, and together they now cost the height of
+the taller one rather than the sum of the two. The tag's twelve plain
+fields are laid out **six, four and two to a row** instead of two stacked
+blocks of five, and its three editors share **one row** instead of two.
+**Generate** moved down into the popup's action row beside Create link and
+Cancel, where the space was already paid for; what *stops* a tag being
+written stays up with the fields that would fix it.
+
+The rest is `_TIGHTEN` in `ui/scheduling/links.py`: gaps, padding and type
+sizes cut back from Streamlit's defaults, scoped to the dialog so the pages
+behind it are untouched. That block carries one hard-won rule — **never
+zero a margin or a min-height on text.** Streamlit sizes a label, caption
+or markdown container from exactly those properties, so zeroing one
+collapses the container to nothing while its text still paints, landing it
+on top of whatever comes next. It measures *shorter* and renders broken,
+which is why every rule in there was checked against a screenshot and not
+just against a number, and why `tests/ui/test_tag_popup.py` keeps a guard
+against it.
+
+Streamlit also allows columns **one level deep**, which is why the tag
+fields are rows of plain columns rather than Source and Sink blocks with
+rows inside them.
+
+### Why the reservation lookup runs twice
+
+`render_tag` asks OASIS for a path both **before** the transmission editor
+draws and **after** it. The second call is the obvious one: a number the
+scheduler has just typed only reaches the tag as the editor returns, and
+showing its path needs a rerun.
+
+The first call is there because that rerun is dangerous on exactly one
+run. When "Use this route" fills the tag, the expander opens and a dozen
+inputs mount for the first time; if the OASIS fill then throws that run
+away, the browser keeps the empty boxes it first painted while the server
+goes on believing they hold the route's values. **Server and screen
+disagree, permanently** — the fields read blank and no amount of waiting
+fixes them. Filling the path *before* the editor paints means that run
+needs no rerun at all, so nothing is stranded.
+
+Worth knowing: no AppTest can catch this. AppTest *is* the server, and the
+server's state was correct the whole time — `st.session_state` held
+`RIMROCK` while the input on screen was empty. It took a Playwright run
+reading the DOM and the session state side by side to see it, and five
+repeats to confirm the fix. What the test suite keeps is a guard on the
+*order* of those two calls, which is the part that must not drift.
 
 ### What the link fills in, and what it doesn't
 
@@ -861,6 +954,29 @@ of *generator, MAG, load* with `G-F` on the first row and `L` on the last —
 
 Left blank, because nothing on the board knows it: GCA, LCA, the source and
 sink points, contracts, transmission reservations, carbon copies.
+
+### What a market end settles by itself
+
+A market end is not a guess. Buying from a market means MAG generates
+there, selling into one means MAG sinks there, and the control area follows
+without anyone typing it — the same fact the route lookup is already
+forbidden from contradicting. So a link into CAISO opens with LCA `CISO`
+(the one market whose control area isn't its own trading name), and one
+into SWPW with `SWPW`.
+
+SWPW settles more than that, and the desk's convention is specific: the
+Market cell reads **SPP** — the pool it settles through, not the
+scheduling point — the **Sink cell is left empty**, and the delivery point
+is named in the **header** instead, `EPE-SWPW(CRSP)`. That is in
+`domain.tags.MARKET_SINK_FIELDS`, one entry per market with a convention on
+file, and a key present there means that cell is settled *including* when
+it is settled to blank. Which is also why an old route can't fill it: "Use
+this route" copies a historical sink point onto the tag, and here the
+market end is known while the route is only a guess, so the known one wins.
+
+Only SWPW so far, and only the sink half — the one the desk has confirmed.
+A market with nothing on file keeps its own name in the Market cell and its
+header untouched.
 
 ### PSE codes are never typed
 
@@ -911,6 +1027,16 @@ Three things it deliberately does not do:
   alone with no lookup and no complaint.
 - **Overwrite a path the scheduler wrote.** Only a blank cell is filled, or
   one this lookup itself put there for a reference since changed.
+- **Fill the same reference twice.** A blank Path is filled once per
+  reference. Empty it and it stays empty — before this, an emptied cell
+  came straight back on the next rerun, which is not a lookup being helpful,
+  it is a lookup overruling someone, and it was the oldest complaint on the
+  TODO ("can't seem to delete the autofilled data"). Once per *reference*
+  rather than per row because no tag in the desk's own history — 0 of
+  2,685 — carries the same reservation number on two transmission segments,
+  so the two amount to the same thing. A path of its own that has gone
+  stale is still corrected: change the number beside one and the path
+  follows, since nobody typed it and it now stands behind nothing.
 - **Treat "not found" as a problem.** The summary holds *MAG's* reservations;
   a segment wheeled on a counterparty's is genuinely absent, which is the
   case for about three references in ten. It says so and leaves the path.

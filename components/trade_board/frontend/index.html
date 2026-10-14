@@ -12,8 +12,14 @@
     --buy: #1f9254;
     --sell: #d0453f;
     --market: #7a4ddb;
-    --wire: rgba(66, 133, 244, 0.5);
     --wire-lit: #3b82f6;
+    /* One per tagging state — see domain.tags.TAG_STATES. Blue is still
+       the ordinary link, because the ordinary link is one MAG has to tag;
+       grey recedes because a tagged link is one nobody has to look at
+       again. */
+    --wire-mag: #3b82f6;
+    --wire-counterparty: #e07b2c;
+    --wire-tagged: #b4b9c2;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -359,19 +365,60 @@ function anchors(a, b) {
   return [[a[0] + dir * SQ_W / 2, a[1]], [b[0] - dir * SQ_W / 2, b[1]]];
 }
 
+function curve(p0, c1, c2, p1) {
+  return "M " + p0[0] + " " + p0[1] + " C " + c1[0] + " " + c1[1] + ", " +
+         c2[0] + " " + c2[1] + ", " + p1[0] + " " + p1[1];
+}
+
+/** The path one link is drawn along.
+ *
+ *  Between two squares it is the flat S it has always been: both ends sit
+ *  in the same horizontal band, and leaving sideways is what keeps a line
+ *  off the box it starts from.
+ *
+ *  **A link that ends on the market rail comes straight down into its
+ *  chip.** Arriving from the side, several of them converged on the rail
+ *  along nearly the same line and which chip each one landed on was
+ *  guesswork — the one thing a trader is reading the board for. Dropping
+ *  in vertically puts every line in its own chip's column for the last
+ *  stretch, which no amount of colour or thickness does. */
+function wirePath(a, b, aMarket, bMarket) {
+  if (aMarket === bMarket) {                 // two squares, or (never) two chips
+    var e = anchors(a, b);
+    var mx = (e[0][0] + e[1][0]) / 2;
+    return curve(e[0], [mx, e[0][1]], [mx, e[1][1]], e[1]);
+  }
+  var sq = aMarket ? b : a, chip = aMarket ? a : b;
+  var dir = chip[0] >= sq[0] ? 1 : -1;
+  var from = [sq[0] + dir * SQ_W / 2, sq[1]];
+  // How long the vertical approach is: a good third of the way up on an
+  // ordinary board, which is what makes it read as vertical rather than as
+  // a curve that happens to end pointing down — but never more than the
+  // gap it has to fit into.
+  var drop = Math.max(20, Math.min(160, (chip[1] - from[1]) * 0.45));
+  var reach = Math.min(70, Math.abs(chip[0] - from[0]) * 0.5);
+  return curve(from, [from[0] + dir * reach, from[1]], [chip[0], chip[1] - drop], chip);
+}
+
+//: The states a link can be in, as the component knows them — the slugs
+//  domain.tags.TAG_STATES uses, which are what ui.scheduling.board sends.
+var WIRE_COLOURS = {mag: "--wire-mag", counterparty: "--wire-counterparty", tagged: "--wire-tagged"};
+
+function wireColour(state) {
+  return "var(" + (WIRE_COLOURS[state] || WIRE_COLOURS.mag) + ")";
+}
+
 function drawWires() {
   while (wires.firstChild) wires.removeChild(wires.firstChild);
   var maxMwh = 1;
   S.links.forEach(function (l) { if (l.mwh > maxMwh) maxMwh = l.mwh; });
 
   S.links.forEach(function (l) {
-    var a = centre(l.buy_key) || marketAnchor(l.buy_market);
-    var b = centre(l.sell_key) || marketAnchor(l.sell_market);
+    var aMarket = !S.pos[l.buy_key], bMarket = !S.pos[l.sell_key];
+    var a = aMarket ? marketAnchor(l.buy_market) : centre(l.buy_key);
+    var b = bMarket ? marketAnchor(l.sell_market) : centre(l.sell_key);
     if (!a || !b) return;
-    var pts = (S.pos[l.buy_key] && S.pos[l.sell_key]) ? anchors(a, b) : [a, b];
-    var p0 = pts[0], p1 = pts[1];
-    var mx = (p0[0] + p1[0]) / 2;
-    var d = "M " + p0[0] + " " + p0[1] + " C " + mx + " " + p0[1] + ", " + mx + " " + p1[1] + ", " + p1[0] + " " + p1[1];
+    var d = wirePath(a, b, aMarket, bMarket);
     var lit = !S.selected || l.related;
     var w = 2 + 9 * (l.mwh / maxMwh);
 
@@ -394,7 +441,9 @@ function drawWires() {
     var vis = document.createElementNS("http://www.w3.org/2000/svg", "path");
     vis.setAttribute("d", d);
     vis.setAttribute("fill", "none");
-    vis.setAttribute("stroke", lit ? "var(--wire-lit)" : "var(--wire)");
+    // Colour says who still has to tag it; opacity still says whether it
+    // is related to the focused square, so the two never fight.
+    vis.setAttribute("stroke", wireColour(l.state));
     vis.setAttribute("stroke-width", w.toFixed(1));
     vis.setAttribute("stroke-linecap", "round");
     vis.setAttribute("opacity", lit ? "0.95" : "0.22");

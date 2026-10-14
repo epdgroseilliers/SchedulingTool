@@ -1,10 +1,9 @@
 -Add bookout logic
--Add trade suggestions from repetitive trades 
--Add the compliance source specified and nws pop-ups
+-Make the compliance source specified and nws pop-ups instead of banner
 -Add coloring for NWS, NCS, SS/ACS attributes and don't allow links CISO>NCS and NWS>!NWS
 -add defaults to GCA/LCA in SWPW bid files
--Color links if MAG has to tag, MAG doesn't have to tag, Tagged
 -Add hourly open positions
+-Improve creation of tag files, input-to-excel fill is not right
 -Tagging workflows
     -DONE (v1): clicking a link opens the tag fields under the schedule in
      one popup — market path, GCA/LCA, source/sink, transmission
@@ -40,12 +39,30 @@
      that no two cards read alike. A market end settles its control area,
      so a link into SWPW is never offered a CISO route, and its path
      string ends MAG001(s) rather than a placeholder. The popup runs the
-     hours and the path string full width and puts the lookup beside the
-     tag fields below them.
+     hours and the path string full width, puts the lookup beside the tag
+     fields below them, and is packed so the whole tag fits on a 1080p
+     screen without scrolling (1,988px -> 1,063). The market path and
+     transmission editors are sized to their rows, so neither is ever
+     scrolled and the popup grows with a longer route.
      Pressing one fills GCA/LCA, source/sink points and market path, and
      carries a reservation number only where it is still good for the flow
      date or isn't a dated reference at all — an expired one leaves the
      number blank and keeps its path.
+    -DONE (v6): a link line now says two things without being clicked. It
+     comes down into a market chip from above rather than in from the
+     side, so several links reaching the rail no longer converge
+     indistinguishably; and it is coloured by who still has to tag it —
+     blue MAG, orange the counterparty, light grey done. The state is a
+     radio in the popup's header for now: nothing on the board can infer
+     it yet, and the colour repaints the board behind the open popup.
+    -DONE (v6): a link sinking into SWPW opens with the desk's own
+     convention already in its cells — SPP in the Market cell, SWPW as the
+     LCA, the delivery point in the header (x-SWPW(CRSP)) and the Sink
+     cell left empty, which "Use this route" then has to leave empty too.
+     Every other market end still settles its own control area.
+    -DONE (v6): the OASIS path fill no longer overrules a scheduler who
+     empties the cell — a blank Path is filled once per reference, and a
+     path of its own that goes stale still follows a changed number.
     -TODO: warn before Generate when a tag matches no route we have ever
      run — the cheapest typo-catcher available now the corpus exists.
     -TODO: split MW across several tags — several paths — from one link.

@@ -20,10 +20,12 @@ from domain.matching import (
     open_mwh,
     over_allocated_hours,
 )
+from domain.tags import DEFAULT_TAG_STATE, TAG_STATES
 from ui.scheduling.state import (
     focused_key,
     hide_leg,
     highlighted_keys,
+    link_states,
     market_leg,
     open_bidfile,
     set_focus,
@@ -66,13 +68,18 @@ def _square(leg, links, related):
     }
 
 
-def build_payload(legs, links, selected, highlighted):
+def build_payload(legs, links, selected, highlighted, states=None):
     """(squares, markets, wires) for the component.
 
     Markets are *not* squares: they live as chips on the rail, always
     available as a drop target and showing their MWh once something lands on
     them. That keeps the middle of the board clear for the links themselves,
     which is the whole reason the squares are small.
+
+    `states` is {link_id: tagging state} (see domain.tags.TAG_STATES), the
+    one thing a wire carries that isn't derivable from the two legs it
+    joins. Passed in rather than read from session state so this stays a
+    plain function; a link missing from it takes the default.
     """
     by_key = {lg.key: lg for lg in legs}
     real = [lg for lg in legs if not lg.is_market]
@@ -99,6 +106,7 @@ def build_payload(legs, links, selected, highlighted):
         # drop the filter and it comes straight back.
         if buy is None or sell is None:
             continue
+        state = (states or {}).get(ln.link_id) or DEFAULT_TAG_STATE
         wires.append(
             {
                 "link_id": ln.link_id,
@@ -109,9 +117,14 @@ def build_payload(legs, links, selected, highlighted):
                 "buy_market": buy.pse if buy.is_market else None,
                 "sell_market": sell.pse if sell.is_market else None,
                 "mwh": round(ln.mwh, 1),
+                # What the line is coloured by, and what its tooltip says
+                # after the numbers — the colour alone says which of the
+                # three it is only once you have learnt the three.
+                "state": state,
                 "label": (
                     f"{ln.link_id}: {buy.pse} → {sell.pse} · "
-                    f"HE {ln.he_label} · {ln.mwh:,.0f} MWh"
+                    f"HE {ln.he_label} · {ln.mwh:,.0f} MWh · "
+                    f"{TAG_STATES.get(state, state)}"
                 ),
                 "related": (
                     not highlighted
@@ -122,21 +135,29 @@ def build_payload(legs, links, selected, highlighted):
     return squares, markets, wires
 
 
-def board_revision(flow_date, legs, links, selected):
+def board_revision(flow_date, legs, links, selected, states=None):
     """What the component watches to decide whether to rebuild.
 
     Positions are deliberately absent: a trader dragging a square causes a
     rerun, and rebuilding on that would snap everything back to the
     auto-layout mid-drag. Everything that genuinely changes the board *is*
-    here.
+    here — the tagging states included, or a link just marked tagged would
+    keep its old colour until something else happened to move.
     """
+    states = states or {}
     return hash(
         (
             str(flow_date),
             tuple(sorted((lg.key, round(lg.mwh, 3)) for lg in legs)),
             tuple(
                 sorted(
-                    (ln.link_id, ln.buy_key, ln.sell_key, round(ln.mwh, 3))
+                    (
+                        ln.link_id,
+                        ln.buy_key,
+                        ln.sell_key,
+                        round(ln.mwh, 3),
+                        states.get(ln.link_id) or DEFAULT_TAG_STATE,
+                    )
                     for ln in links
                 )
             ),
@@ -150,7 +171,8 @@ def render_board(legs, links, flow_date):
     when something changed and the caller should rerun."""
     highlighted = highlighted_keys(legs)
     selected = focused_key()
-    squares, markets, wires = build_payload(legs, links, selected, highlighted)
+    states = link_states(links)
+    squares, markets, wires = build_payload(legs, links, selected, highlighted, states)
 
     event = trade_board(
         squares=squares,
@@ -158,7 +180,7 @@ def render_board(legs, links, flow_date):
         markets=markets,
         positions=st.session_state.get("mv_positions", {}),
         selected=selected,
-        revision=board_revision(flow_date, legs, links, selected),
+        revision=board_revision(flow_date, legs, links, selected, states),
         height=MIN_BOARD_HEIGHT,
     )
     return handle_event(event, legs, flow_date)

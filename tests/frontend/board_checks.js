@@ -328,4 +328,38 @@ render({ squares, links, markets, positions: {}, selected: null, revision: 4, he
 check("empty placeholder removed on rebuild", doc.querySelectorAll("#empty").length === 0,
       doc.querySelectorAll("#empty").length);
 
+// --- a link onto the market rail drops into its chip -------------------
+// Arriving from the side, several links converging on the rail ran along
+// nearly the same line and which chip each one ended at was guesswork. The
+// last stretch is vertical instead, so each line sits in its own chip's
+// column where a trader reads it.
+const railLink = (state) => [{
+  link_id: "L1", buy_key: "db:1", sell_key: "mkt:SWPW",
+  buy_market: null, sell_market: "SWPW", mwh: 100, label: "L1",
+  related: true, state: state,
+}];
+// "M x0 y0 C c1x c1y, c2x c2y, x1 y1" -> the eight numbers in order.
+const bezier = (d) => d.replace(/[MC,]/g, " ").trim().split(/\s+/).map(Number);
+const wireAttr = (name) => doc.querySelectorAll("#wires path")[0].getAttribute(name);
+
+render({ squares, links: railLink("mag"), markets, positions: {}, selected: null, revision: 20, height: 240 });
+let b = bezier(wireAttr("d"));
+check("a market link's last control point is over its chip", b[4] === b[6], b);
+check("...so it comes down into the rail rather than in from the side", b[5] < b[7], b);
+
+render({ squares, links, markets, positions: {}, selected: null, revision: 21, height: 240 });
+b = bezier(wireAttr("d"));
+check("a link between two squares still runs flat", b[4] !== b[6], b);
+
+// --- the colour says who still has to tag it ---------------------------
+check("a link MAG has to tag is blue", wireAttr("stroke") === "var(--wire-mag)", wireAttr("stroke"));
+render({ squares, links: railLink("counterparty"), markets, positions: {}, selected: null, revision: 22, height: 240 });
+check("one the counterparty has to tag is orange",
+      wireAttr("stroke") === "var(--wire-counterparty)", wireAttr("stroke"));
+render({ squares, links: railLink("tagged"), markets, positions: {}, selected: null, revision: 24, height: 240 });
+check("a tagged one recedes", wireAttr("stroke") === "var(--wire-tagged)", wireAttr("stroke"));
+render({ squares, links: railLink(undefined), markets, positions: {}, selected: null, revision: 25, height: 240 });
+check("a state this build doesn't know reads as MAG's own",
+      wireAttr("stroke") === "var(--wire-mag)", wireAttr("stroke"));
+
 console.log(process.exitCode ? "\nSOME CHECKS FAILED" : "\nALL CHECKS PASSED");

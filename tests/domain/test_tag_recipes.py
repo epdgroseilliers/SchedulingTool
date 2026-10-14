@@ -226,6 +226,14 @@ class TestTheHumanLabel:
 
 
 class TestGrouping:
+    def test_a_recipe_carries_its_two_ends_as_bare_points(self):
+        # What the ranking compares the tag's own Source and Sink cells
+        # against — the card shows the same two with their areas.
+        recipe = group_by_recipe([record()])[0]
+        assert (recipe["source_point"], recipe["sink_point"]) == (
+            "RIMROCK", "SWPW_HUB"
+        )
+
     def test_the_same_route_twice_is_one_recipe(self):
         recipes = group_by_recipe([EXAMPLE, record(tag_index=2)])
         assert len(recipes) == 1
@@ -289,10 +297,12 @@ def counterparty_leg(pse):
     return _Leg(pse, False)
 
 
-def _tag(gca="", lca="", market_path=()):
+def _tag(gca="", lca="", market_path=(), source="", sink=""):
     tag = blank_tag()
     tag["source"]["gca"] = gca
     tag["sink"]["lca"] = lca
+    tag["source"]["point"] = source
+    tag["sink"]["point"] = sink
     tag["market_path"] = [
         {"pse": pse, "product": "", "contract": ""} for pse in market_path
     ]
@@ -326,9 +336,15 @@ class TestTheQueryBuiltFromATag:
         assert query["lca"] is None
         assert query["counterparties"]
 
+    def test_the_two_points_come_along_as_well(self):
+        query = tag_query(_tag(source="rimrock", sink="SWPW_HUB"))
+        assert query["source_point"] == "RIMROCK"
+        assert query["sink_point"] == "SWPW_HUB"
+
     def test_a_blank_tag_has_nothing_at_all(self):
         assert tag_query(blank_tag()) == {
             "gca": None, "lca": None,
+            "source_point": None, "sink_point": None,
             "counterparties": frozenset(), "fixed": frozenset(),
         }
 
@@ -388,6 +404,88 @@ class TestRankingRecipesAgainstAQuery:
         # Nothing to share a counterparty with — the hard filter, not a bug.
         query = {"gca": None, "lca": None, "counterparties": frozenset()}
         assert rank_recipes([self.recipe()], query) == []
+
+
+class TestAPointOutranksTheAreaItSitsIn:
+    """A Source or Sink cell names exactly one control area, so matching on
+    the point is the same test sharpened — and the reverse doesn't hold,
+    since one area holds many plants. So an end with a point is scored on
+    the point *instead of* its control area, never on both."""
+
+    def recipe(self, **over):
+        base = {
+            "recipe_id": "r", "gca": "GWA", "lca": "SWPW", "count": 1,
+            "last_flow_date": date(2026, 9, 1), "counterparties": ("ABEX",),
+            "source_point": "RIMROCK", "sink_point": "SWPW_HUB",
+        }
+        base.update(over)
+        return base
+
+    def query(self, **over):
+        base = {
+            "gca": None, "lca": None, "source_point": None, "sink_point": None,
+            "counterparties": frozenset({"ABEX"}), "fixed": frozenset(),
+        }
+        base.update(over)
+        return base
+
+    def test_a_matching_source_point_lifts_a_recipe(self):
+        right = self.recipe(recipe_id="right", source_point="RIMROCK")
+        wrong = self.recipe(recipe_id="wrong", source_point="COLSTRIP")
+        ranked = rank_recipes([wrong, right], self.query(source_point="RIMROCK"))
+        assert [r["recipe_id"] for r in ranked] == ["right", "wrong"]
+
+    def test_the_sink_point_does_the_same_on_its_own_end(self):
+        right = self.recipe(recipe_id="right", sink_point="SWPW_HUB")
+        wrong = self.recipe(recipe_id="wrong", sink_point="MEAD230")
+        ranked = rank_recipes([wrong, right], self.query(sink_point="SWPW_HUB"))
+        assert [r["recipe_id"] for r in ranked] == ["right", "wrong"]
+
+    def test_and_the_control_area_stops_counting_on_that_end(self):
+        # The whole point of the rule: a route out of the right area but the
+        # wrong plant is not as good as the right plant, and scoring both
+        # would count one fact twice and let the area make up the difference.
+        right_plant = self.recipe(
+            recipe_id="plant", gca="OTHER", source_point="RIMROCK"
+        )
+        right_area = self.recipe(
+            recipe_id="area", gca="GWA", source_point="COLSTRIP"
+        )
+        ranked = rank_recipes(
+            [right_area, right_plant], self.query(gca="GWA", source_point="RIMROCK")
+        )
+        assert [r["recipe_id"] for r in ranked] == ["plant", "area"]
+
+    def test_the_other_end_still_goes_by_its_own_rule(self):
+        # One end having a point says nothing about the other.
+        both = self.recipe(recipe_id="both", lca="SWPW", source_point="RIMROCK")
+        one = self.recipe(recipe_id="one", lca="OTHER", source_point="RIMROCK")
+        ranked = rank_recipes(
+            [one, both], self.query(lca="SWPW", source_point="RIMROCK")
+        )
+        assert [r["recipe_id"] for r in ranked] == ["both", "one"]
+
+    def test_with_no_point_the_control_area_still_decides(self):
+        right = self.recipe(recipe_id="right", gca="GWA")
+        wrong = self.recipe(recipe_id="wrong", gca="OTHER")
+        ranked = rank_recipes([wrong, right], self.query(gca="GWA"))
+        assert [r["recipe_id"] for r in ranked] == ["right", "wrong"]
+
+    def test_a_point_never_rules_a_route_out(self):
+        # Soft, unlike a market end's control area: the Source cell is a
+        # field still being filled in, and the route we want may well be one
+        # run from the plant next door.
+        wrong = self.recipe(source_point="COLSTRIP")
+        assert rank_recipes([wrong], self.query(source_point="RIMROCK")) == [wrong]
+
+    def test_a_market_end_still_rules_one_out_whatever_is_in_the_cell(self):
+        # A link into SWPW does not sink in CISO, and a point typed on that
+        # end doesn't soften it — the desk leaves that cell empty anyway.
+        elsewhere = self.recipe(lca="CISO")
+        query = self.query(
+            lca="SWPW", sink_point="SWPW_HUB", fixed=frozenset({"lca"})
+        )
+        assert rank_recipes([elsewhere], query) == []
 
 
 class TestWhatARouteLooksLikeOnScreen:

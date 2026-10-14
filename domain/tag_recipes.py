@@ -7,10 +7,11 @@ that 6,951 tags become the few hundred routes the desk actually runs.
 
 A **recipe signature** is that key: a single line that is identical for two
 tags following the same route and different for two that don't. It carries
-the control areas, the PSE chain with its energy products, the physical path,
-and the transmission product on each segment. It deliberately leaves out
-reservation numbers, times and MW — those are what changes every day, and
-folding them in would make every tag its own recipe.
+the control areas, the PSE chain with its energy products, and the physical
+path. It deliberately leaves out reservation numbers, times and MW — those
+are what changes every day, and folding them in would make every tag its own
+recipe — and the transmission product, which is the day's paperwork rather
+than the route (see physical_step).
 
 Every normalization below is a decision about which two tags count as the
 same route, which is why each one is written down rather than left to the
@@ -187,19 +188,45 @@ def route_summary(record):
     return f"{route} via {'>'.join(providers)}" if providers else route
 
 
+def _ends(record):
+    """(source name, source CA, sink name, sink CA) off the physical path:
+    the first generation segment that names either, and the load segment.
+
+    One walk, because the two things read off it have to agree — the pair
+    shown on a card (endpoints_of) and the pair matched against the tag on
+    screen (points_of).
+    """
+    s_name = s_ca = k_name = k_ca = ""
+    for segment in record.get("physical_path") or []:
+        kind = _norm(segment.get("type"))
+        if kind == GENERATION and not s_name and not s_ca:
+            s_name = (segment.get("por_name") or "").strip()
+            s_ca = (segment.get("por_ca") or "").strip()
+        elif kind == LOAD:
+            k_name = (segment.get("pod_name") or "").strip()
+            k_ca = (segment.get("pod_ca") or "").strip()
+    return s_name, s_ca, k_name, k_ca
+
+
 def endpoints_of(record):
     """('RIMROCK (GWA)', 'SWPW_HUB (SWPW)') — where a route physically
     starts and ends, which is what a scheduler recognises a route by. The
     control areas alone (route_summary) don't distinguish two routes out of
     the same area by different plants."""
-    source = sink = ""
-    for segment in record.get("physical_path") or []:
-        kind = _norm(segment.get("type"))
-        if kind == GENERATION and not source:
-            source = _point(segment.get("por_name"), segment.get("por_ca"))
-        elif kind == LOAD:
-            sink = _point(segment.get("pod_name"), segment.get("pod_ca"))
-    return source, sink
+    s_name, s_ca, k_name, k_ca = _ends(record)
+    return _point(s_name, s_ca), _point(k_name, k_ca)
+
+
+def points_of(record):
+    """('RIMROCK', 'SWPW_HUB') — the same two ends as bare point names, for
+    comparing against the Source and Sink cells of the tag being built.
+
+    Without the control area in brackets, because that is what the tag's own
+    cells hold: the sheet's Source and Sink are a named plant or interface,
+    and the control area is a field of its own beside them.
+    """
+    s_name, _, k_name, _ = _ends(record)
+    return s_name.upper(), k_name.upper()
 
 
 def _point(name, control_area):
@@ -295,6 +322,10 @@ def group_by_recipe(records, samples=3):
                 "signature_version": SIGNATURE_VERSION,
                 "summary": route_summary(record),
                 "endpoints": endpoints_of(record),
+                # The same two ends as bare names — what the ranking matches
+                # the tag's Source and Sink cells against (points_of).
+                "source_point": points_of(record)[0],
+                "sink_point": points_of(record)[1],
                 "chain": chain_summary(record),
                 "wires": wire_summary(record),
                 "gca": record.get("gca", ""),
@@ -344,6 +375,13 @@ def tag_query(tag, buy_leg=None, sell_leg=None, mag_pse=MAG_PSE):
     cased, matching recipe_signature's own normalization, so a query built
     from hand-typed text still compares equal to history read out of OATI.
 
+    The Source and Sink cells come along too, and **supersede the control
+    area on their own end** once they hold something (see rank_recipes). A
+    point names exactly one control area, so matching on the point is the
+    same test, only sharper; the reverse doesn't hold, since one area holds
+    many plants. A market end has no point — the desk leaves that cell
+    empty — and settles its control area outright instead.
+
     **A market end is a fact, not a hint.** A link selling into SWPW is MAG
     sinking the power there, so that tag's LCA *is* SWPW — and a route we
     once ran into CISO with the same counterparty is a different deal, not
@@ -359,6 +397,8 @@ def tag_query(tag, buy_leg=None, sell_leg=None, mag_pse=MAG_PSE):
     )
     gca = (tag.get("source", {}).get("gca") or "").strip().upper() or None
     lca = (tag.get("sink", {}).get("lca") or "").strip().upper() or None
+    source_point = (tag.get("source", {}).get("point") or "").strip().upper() or None
+    sink_point = (tag.get("sink", {}).get("point") or "").strip().upper() or None
 
     fixed = set()
     for leg, name in ((buy_leg, "gca"), (sell_leg, "lca")):
@@ -376,9 +416,48 @@ def tag_query(tag, buy_leg=None, sell_leg=None, mag_pse=MAG_PSE):
     return {
         "gca": gca,
         "lca": lca,
+        "source_point": source_point,
+        "sink_point": sink_point,
         "counterparties": counterparties,
         "fixed": frozenset(fixed),
     }
+
+
+#: What one shared counterparty is worth, and what one end matching is.
+#: A counterparty is the thing a query always has, so it carries the weight;
+#: an end match orders recipes that already share one.
+SHARED_COUNTERPARTY = 10
+END_MATCH = 5
+
+
+def _end_score(recipe, query, area_field, point_field, fixed):
+    """What one end of a route is worth against the query's same end, or
+    None when it rules the recipe out.
+
+    **The point supersedes the control area, never both.** A Source or Sink
+    cell names exactly one control area, so matching on it is the same test
+    sharpened — while the reverse doesn't hold, since one area holds many
+    plants. So an end with a point is scored on the point alone, and the
+    control area only answers for an end that has none. Scoring both would
+    count one fact twice, and would hand a route generating somewhere else
+    in the same area the same credit as the right plant.
+
+    A control area a *market* end settles is the exception and stays a hard
+    filter: that end is a fact about the link, not a field being filled in,
+    and it names no point to match on because the desk leaves that cell
+    empty (domain.tags.MARKET_SINK_FIELDS).
+    """
+    area = query.get(area_field)
+    if area_field in fixed:
+        matches = (recipe.get(area_field) or "").strip().upper() == area
+        return END_MATCH if matches else None
+
+    point = query.get(point_field)
+    if point:
+        return END_MATCH if (recipe.get(point_field) or "").upper() == point else 0
+    if area and (recipe.get(area_field) or "").strip().upper() == area:
+        return END_MATCH
+    return 0
 
 
 def rank_recipes(recipes, query, limit=5):
@@ -396,10 +475,12 @@ def rank_recipes(recipes, query, limit=5):
     A link into SWPW sinks there; a CISO route is simply not one of this
     link's options, however often we've run it with the same counterparty.
 
-    A GCA or LCA the trader merely typed is a preference instead: it moves a
-    recipe up without ruling the others out. Ties break the same way
-    group_by_recipe's own list already does: more used, then more recently
-    used.
+    Everything else is a preference: it moves a recipe up without ruling the
+    others out. Each end is scored once — on its **Source or Sink point**
+    where the tag names one, and on its control area otherwise, since a
+    point names exactly one area and is the sharper of the two (see
+    _end_score). Ties break the same way group_by_recipe's own list already
+    does: more used, then more recently used.
     """
     counterparties = query.get("counterparties") or frozenset()
     fixed = query.get("fixed") or frozenset()
@@ -409,16 +490,13 @@ def rank_recipes(recipes, query, limit=5):
         shared = counterparties & {c.upper() for c in recipe["counterparties"]}
         if not shared:
             continue
-        score = 10 * len(shared)
-        for name in ("gca", "lca"):
-            wanted = query.get(name)
-            if not wanted:
-                continue
-            if (recipe.get(name) or "").strip().upper() == wanted:
-                score += 5
-            elif name in fixed:
+        score = SHARED_COUNTERPARTY * len(shared)
+        for area_field, point_field in (("gca", "source_point"), ("lca", "sink_point")):
+            end = _end_score(recipe, query, area_field, point_field, fixed)
+            if end is None:
                 score = None
                 break
+            score += end
         if score is None:
             continue
         scored.append((score, recipe))

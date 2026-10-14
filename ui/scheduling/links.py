@@ -11,7 +11,6 @@ separate surface for each would be four things to learn.
 
 import streamlit as st
 
-from data.bilateral import hours_to_he_string
 from domain.matching import links_for, open_by_hour, suggest_allocation
 from ui.scheduling.state import (
     LINK_DIALOG,
@@ -27,7 +26,14 @@ from ui.scheduling.state import (
     remove_link,
     update_link,
 )
-from ui.scheduling.tag import recipe_was_applied, render_path_string, render_tag, render_tag_lookup
+from ui.scheduling.tag import (
+    recipe_was_applied,
+    render_generate,
+    render_path_string,
+    render_tag,
+    render_tag_lookup,
+    render_tag_state,
+)
 from ui.scheduling.widgets import hours_editor as _hours_editor
 
 
@@ -39,17 +45,62 @@ from ui.scheduling.widgets import hours_editor as _hours_editor
 #: side. Only one modal is ever open at a time, so the two can't collide.
 DIALOG_WIDTH_PX = 1600
 
+#: The who-and-where line against the tagging-state radio. The radio is
+#: three options wide and wants a row of its own on a narrow screen rather
+#: than wrapping under the sentence beside it.
+HEADER_SPLIT = [3, 2]
+
 #: The lookup against the tag fields. The lookup is text that wraps; the tag
 #: fields are two halves of a form plus three editors, and want the room.
 POPUP_SPLIT = [2, 3]
 
 
+#: Everything in the popup is packed tighter than Streamlit's defaults, so
+#: the whole tag fits on one screen. Scoped to the dialog, so the pages
+#: behind it keep the ordinary spacing.
+#:
+#: Tighter, not airless. The first pass at this fitted in about two thirds
+#: of a screen and read as one undifferentiated block — there is room for
+#: roughly a quarter more height than that, and it is spent here, on the
+#: gaps that tell one thing from the next.
+#:
+#: Only padding, gaps and type sizes. **Never zero a margin or a min-height
+#: on text** — a label, a caption or a markdown paragraph. Streamlit sizes
+#: those containers from exactly those properties, so zeroing one collapses
+#: the container to nothing while its text still paints, and it lands on top
+#: of whatever comes next. That reads as a *tighter* layout in a height
+#: measurement and as a broken one on screen, which is why every rule here
+#: was checked against a screenshot and not just against a number.
+_TIGHTEN = """
+D div[data-testid='stVerticalBlock']{gap:.55rem}
+D div[data-testid='stHorizontalBlock']{gap:.8rem}
+D label[data-testid='stWidgetLabel'] p{font-size:.72rem;line-height:1.3}
+D div[data-baseweb='base-input'] input{padding:.2rem .5rem;font-size:.85rem;height:1.9rem}
+D div[data-testid='stCaptionContainer'] p{font-size:.74rem;line-height:1.35}
+D div[data-testid='stMarkdownContainer'] p{line-height:1.35}
+D hr{margin:.6rem 0}
+D details summary{padding:.35rem .6rem}
+D div[data-testid='stExpanderDetails']{padding-top:.45rem}
+D div[data-testid='stCodeBlock'] pre{padding:.55rem .7rem}
+D div[data-testid='stButton'] button{padding:.25rem .7rem;min-height:2rem}
+D div[class*='st-key-route_']{padding:.55rem .75rem}
+"""
+
+
 def _dialog_css():
+    """Wider, and packed tighter than Streamlit's defaults everywhere — the
+    popup has to hold the hours, the path string, the route lookup and the
+    whole tag form at once, and a default 1rem gap between every element
+    spends several hundred pixels on nothing."""
+    scope = "div[data-testid='stDialog'] div[role='dialog'] "
+    tightened = "".join(
+        line.replace("D ", scope, 1) for line in _TIGHTEN.strip().splitlines()
+    )
     return (
         "<style>div[data-testid='stDialog'] div[role='dialog']{"
         f"width:min({DIALOG_WIDTH_PX}px,97vw);"
         f"max-width:min({DIALOG_WIDTH_PX}px,97vw);"
-        "}</style>"
+        "}" + tightened + "</style>"
     )
 
 
@@ -117,7 +168,16 @@ def render_popup(legs, links, flow_date):
                 st.rerun()
             return
 
-        st.markdown(
+        # A link still being drawn gets its tag — and its path string, and
+        # its state — too, filed under PENDING_TAG until Create link gives
+        # it an id.
+        tag_key = link.link_id if link else PENDING_TAG
+
+        # Who and where on the left, who still has to tag it on the right:
+        # the header line was half empty and the radio is the one control
+        # that belongs with the link rather than with the tag's own fields.
+        who, state = st.columns(HEADER_SPLIT, vertical_alignment="center")
+        who.markdown(
             f"{_side_text(buy, 'Buy from')} · {_side_text(sell, 'sell to')}"
         )
 
@@ -143,6 +203,10 @@ def render_popup(legs, links, flow_date):
         allocation = _hours_editor(
             start_from, flow_date, key=f"mv_alloc_{editing or 'new'}"
         )
+        # Drawn into the header column above, which is why it comes after
+        # the hours: ensure_tag wants the schedule, and the schedule is
+        # whatever the editor just returned.
+        render_tag_state(state, tag_key, buy, sell, allocation, flow_date)
         open_notes = [
             note
             for note in (_open_note(buy, without_this), _open_note(sell, without_this))
@@ -155,9 +219,6 @@ def render_popup(legs, links, flow_date):
         )
 
         st.divider()
-        # A link still being drawn gets its tag — and its path string — too,
-        # filed under PENDING_TAG until Create link gives it an id.
-        tag_key = link.link_id if link else PENDING_TAG
         render_path_string(st, tag_key, buy, sell, allocation, flow_date)
 
         # Side by side below the full-width half, because both are tall and
@@ -173,18 +234,11 @@ def render_popup(legs, links, flow_date):
         with tag_col.expander(
             "Tag details", expanded=bool(editing) or recipe_was_applied(tag_key)
         ):
-            render_tag(
-                st.container(),
-                tag_key,
-                buy,
-                sell,
-                allocation,
-                flow_date,
-                hours_to_he_string(sorted(allocation)),
-            )
+            render_tag(st.container(), tag_key, buy, sell, allocation, flow_date)
         st.divider()
 
-        cols = st.columns([1, 1, 1, 3])
+        cols = st.columns([1, 1, 1, 4], vertical_alignment="center")
+        render_generate(cols[3], tag_key)
         if cols[0].button(
             "Save" if editing else "Create link", type="primary", width="stretch"
         ):

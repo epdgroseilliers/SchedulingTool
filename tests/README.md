@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-924 tests total: all but 26 run with no network dependency beyond what
+968 tests total: all but 26 run with no network dependency beyond what
 rendering the app already needs (see below); those 26 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them, and a couple skip on a weekday whose WECC trading
@@ -51,7 +51,9 @@ tests/
                              group_by_recipe's own list already does, a
                              market end settles its control area (CAISO
                              tagging as CISO) and rules the other areas out
-                             rather than merely ranking them, and what a
+                             rather than merely ranking them, a Source or
+                             Sink point supersedes its own end's control
+                             area without ever ruling a route out, and what a
                              route is shown by — its two physical ends, its
                              PSE chain with the energy products, and its
                              wheels, with one reservation's legs folded
@@ -126,7 +128,10 @@ tests/
                               driven entirely by trades seeded into
                               session_state.trades
     test_board_payload.py    what gets handed to the board component — pure
-                              functions, checked directly
+                              functions, checked directly — including each
+                              wire's tagging state, which the revision has
+                              to carry too or a link just marked tagged
+                              keeps its old colour
     test_board_frontend.py   runs tests/frontend/board_checks.js (below), and
                               checks the Python/JS event contract still lines
                               up on both sides
@@ -156,7 +161,13 @@ tests/
                               round), and never behind the tag expander —
                               which is shut on a link being drawn and open on
                               one clicked again. And "Lookup old tags": a
-                              shared counterparty surfaces a route (stubbed
+                              shared counterparty surfaces a route; who
+                              still has to tag the link, which defaults to
+                              MAG and rides onto the link when it is
+                              created; what sinking into SWPW fills in by
+                              itself and what it keeps an old route from
+                              filling; and that a Path cell emptied by hand
+                              stays empty (stubbed
                               history — the live wiring is covered by
                               test_tags_history.py and test_tag_recipes.py),
                               an unrelated one never does, an error from the
@@ -174,6 +185,17 @@ tests/
                               neither does one that isn't ours to check —
                               nor does any path, ever, since a path is only
                               looked up and never copied off an old route.
+                              And two guards for traps only a browser can
+                              show: that the popup's CSS never zeroes a
+                              margin or a min-height on text (which looks
+                              tighter in a measurement and renders as one
+                              label on top of the next), and that the OASIS
+                              lookup runs before the transmission editor
+                              draws as well as after it (or applying a
+                              route leaves the fields beside it blank on
+                              screen while the server holds their values).
+                              Plus the editors' own sizing: every row shown,
+                              never a scrollbar.
                               Also that a link into a market is never
                               offered a route sinking somewhere else. Every
                               file goes to tmp_path; never Y:\West
@@ -199,7 +221,12 @@ tests/
                               still match the component's own CSS
   frontend/
     board_checks.js         the trade board component driven in jsdom: real
-                             pointer gestures against the real index.html
+                             pointer gestures against the real index.html,
+                             and the two things a link line says — that one
+                             ending on the market rail drops into its chip
+                             from above while one between two squares still
+                             runs flat, and that its colour follows the
+                             tagging state it was handed
     bid_grid_checks.js      the bid grid component driven in jsdom: its
                              three-level header, the blank-vs-zero rule, and
                              the patch-in-place that keeps the caret where

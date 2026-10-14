@@ -21,6 +21,24 @@ import re
 #: it sinks into one, and in the middle when both ends are counterparties.
 MAG_PSE = "MAG001"
 
+#: Who still has to tag a link, and what the board colours it.
+#:
+#: Three for now, set by hand in the link popup: most of what would decide
+#: this automatically — whether the counterparty tags into the market, who
+#: the PSE of record is — isn't on the board yet. The slug is what's stored
+#: and what the component colours on; the label is only ever read on screen,
+#: so rewording one costs nothing.
+TAG_STATES = {
+    "mag": "MAG tags it",
+    "counterparty": "Counterparty tags it",
+    "tagged": "Tagged",
+}
+
+#: What every link starts as. Deliberately the most work rather than the
+#: least: a link nobody has looked at is one somebody still has to.
+DEFAULT_TAG_STATE = "mag"
+
+
 #: Products seen in the desk's 2026 tag files, most common first. The
 #: generator end of a market path carries a G product and the load end
 #: carries L; a wheel-through in the middle carries none.
@@ -86,6 +104,9 @@ def blank_tag(flow_date=None):
         # round of the back-and-forth produced, and nothing here reads it
         # back into the fields above yet.
         "path_string": "",
+        # Who still has to tag this link — see TAG_STATES. Set by hand
+        # for now; the board reads it to colour the link's line.
+        "state": DEFAULT_TAG_STATE,
         # PPT hour-ending -> MW, straight off the link.
         "mw_by_hour": {},
     }
@@ -176,6 +197,21 @@ def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date, pse_for=None):
     tag["market_path"] = default_market_path(buy_leg, sell_leg, pse_for)
     tag["path_string"] = default_path_string(buy_leg, sell_leg, pse_for)
     tag["mw_by_hour"] = {int(h): float(mw) for h, mw in mw_by_hour.items()}
+
+    # A market end is not a guess. Buying from a market means MAG generates
+    # there and selling into one means MAG sinks there, so that end's
+    # control area is settled before anyone types anything — the same fact
+    # the route lookup already refuses to search against (see
+    # domain.tag_recipes.tag_query).
+    if getattr(buy_leg, "is_market", False):
+        tag["source"]["gca"] = control_area_for_market(buy_leg.pse) or ""
+    if getattr(sell_leg, "is_market", False):
+        tag["sink"]["lca"] = control_area_for_market(sell_leg.pse) or ""
+    for field, value in market_sink_fields(sell_leg).items():
+        if field == "label_point":
+            tag["label"] = f"{buy_leg.pse}-{sell_leg.pse}({value})"
+        else:
+            tag["sink"][field] = value
     return tag
 
 
@@ -233,6 +269,29 @@ MARKET_CONTROL_AREAS = {
     "AESO": "AESO",
     "CEN": "CEN",
 }
+
+
+#: What else a market end settles, beyond its control area.
+#:
+#: Only the sink half, and only SWPW, because that is the one the desk has
+#: a settled convention for and the only one it has confirmed: selling into
+#: SWPW is written with SPP in the Market cell — the pool it settles
+#: through, not the scheduling point — the Sink cell left empty, and the
+#: delivery point named in the header instead ("EPE-SWPW(CRSP)"). A key
+#: present here means that cell is settled by the market, *including* when
+#: it is settled to blank, which is why `point` is in the dict rather than
+#: simply absent from it.
+MARKET_SINK_FIELDS = {
+    "SWPW": {"market": "SPP", "point": "", "label_point": "CRSP"},
+}
+
+
+def market_sink_fields(leg):
+    """What a link sinking into this market fills in by itself, or {} — for
+    a leg that isn't a market, or a market with no convention on file."""
+    if not getattr(leg, "is_market", False):
+        return {}
+    return MARKET_SINK_FIELDS.get((leg.pse or "").strip().upper(), {})
 
 
 def control_area_for_market(market):
