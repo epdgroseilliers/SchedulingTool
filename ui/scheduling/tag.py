@@ -42,6 +42,7 @@ import pandas as pd
 import streamlit as st
 
 import data.tagfiles.bilateral as tagfile
+from data.bilateral import hours_to_he_string
 from data.markets import known_pse_codes
 from data.reservations import reservation
 from data.tags_history import load_west_tags
@@ -57,11 +58,18 @@ from domain.tags import (
     PRODUCTS,
     TAG_STATES,
     lookupable_aref,
-    market_sink_fields,
+    market_end_fields,
     reservation_covers,
+    split_difference,
     tag_errors,
 )
-from ui.scheduling.state import LINK_DIALOG, arm_dialog, ensure_tag, tag_for
+from ui.scheduling.state import (
+    LINK_DIALOG,
+    arm_dialog,
+    ensure_tag,
+    tag_for,
+    tag_keys_for,
+)
 from ui.session import widget_defaults
 
 #: Height of each list editor, in pixels: its header plus four rows — one
@@ -132,9 +140,20 @@ def _table(container, link_id, name, rows, columns, column_config):
     to the page while a column is open lands *under* the columns at full
     width, which is how the market path and the carbon copy ended up
     stacked instead of side by side.
+
+    **A changed row count re-seeds the editor and renames it** — see
+    seed_is_stale, and the trace in PROJECT.md. Without that, deleting a row
+    undid itself the next time the trader touched anything.
     """
-    seed_key, widget_key = _key(link_id, f"{name}_seed"), _widget_key(link_id, name)
-    if seed_key not in st.session_state or widget_key not in st.session_state:
+    seed_key = _key(link_id, f"{name}_seed")
+    widget_key = _widget_key(link_id, name)
+    seed = st.session_state.get(seed_key)
+    fresh = seed is None or widget_key not in st.session_state
+    if not fresh and seed_is_stale(seed, rows):
+        _bump(link_id, name)
+        widget_key = _widget_key(link_id, name)
+        fresh = True
+    if fresh:
         st.session_state[seed_key] = pd.DataFrame(rows or [], columns=list(columns))
     edited = container.data_editor(
         st.session_state[seed_key],
@@ -147,6 +166,40 @@ def _table(container, link_id, name, rows, columns, column_config):
         column_config=column_config,
     )
     return edited.to_dict("records")
+
+
+def seed_is_stale(seed, rows):
+    """Whether this editor has to be re-seeded and renamed with it.
+
+    True exactly when the row count has moved — which is exactly when
+    `table_height` moves, and **`height` is one of the properties Streamlit
+    hashes into a data editor's element id**. So a row added or deleted
+    renames the widget whether or not anyone asks it to, and the diff the
+    trader had accumulated is addressed to a name that no longer exists.
+
+    That is not a theory. Traced in Chrome, deleting the middle row of a
+    three-row market path and then touching any other field:
+
+        run 1  in=3  state={deleted_rows: [1]}  out=2   <- the deletion
+        run 2  in=2  state={deleted_rows: [1]}  out=3   <- and back again
+
+    On run 2 the row count had dropped to 2, so the height dropped from 150
+    to 122, so the id changed, so the diff was looked up under a name that
+    held nothing and the three-row seed came back untouched. Streamlit then
+    wrote the empty diff over the real one, and the deletion was gone for
+    good.
+
+    Re-seeding at that moment is what makes the rename lossless: the tag
+    already holds the edit, because every run reads the editor's output
+    straight into it, so a clean widget over a fresh seed shows exactly
+    what the trader did.
+
+    False while a trader is only typing, which is the other half of the
+    rule: a seed that moved on every keystroke would rename the widget
+    mid-edit and drop the *next* edit — the "every value has to be typed
+    twice" bug the module docstring is about.
+    """
+    return seed is None or len(seed.index) != len(rows or [])
 
 
 def table_height(rows):
@@ -227,7 +280,41 @@ def _render_fields(container, tag, link_id):
     _text(row[1], sink, "comment", "Sink PSE comment", link_id, "Sink_comment")
 
 
-def render_generate(container, tag_key):
+def split_errors(link_mw_by_hour, schedules):
+    """Why these tags aren't this link's schedule yet - empty when they add
+    up, which is the only state a tag may be written from.
+
+    The arithmetic is domain.tags.split_difference; this is the sentence a
+    trader reads, built here because the HE-range formatter it wants lives
+    in data (see that function's own docstring).
+
+    One line per direction rather than one per hour: a split is usually
+    wrong across a whole block of hours at once, and twenty-four lines
+    saying the same thing is not a message anyone reads. Over and short are
+    kept apart because they are different mistakes - one tags MW the desk
+    does not have, the other leaves some untagged.
+    """
+    difference = split_difference(link_mw_by_hour, schedules)
+    if not difference:
+        return []
+
+    errors = []
+    for hours, over in (
+        ([h for h, d in difference.items() if d > 0], True),
+        ([h for h, d in difference.items() if d < 0], False),
+    ):
+        if not hours:
+            continue
+        total = abs(sum(difference[h] for h in hours))
+        errors.append(
+            f"The tags carry {'more' if over else 'less'} than this link on "
+            f"HE {hours_to_he_string(hours)} — {total:,.0f} MWh "
+            f"{'too much' if over else 'short'}."
+        )
+    return errors
+
+
+def render_generate(container, tag_key, blocked=False):
     """Generate, and the overwrite tick beside it — in the popup's own
     action row, next to Create link and Cancel.
 
@@ -236,42 +323,50 @@ def render_generate(container, tag_key):
     column is what decides whether the popup fits on a screen: a block that
     reads just as well in a row that was half empty costs nothing there.
 
-    Where the file goes is on the button's tooltip. What *stops* it being
-    written stays up in the fields (render_tag), next to the boxes that
-    would fix it.
+    **Every tag the link carries, in one press.** A link split across
+    several paths is still one decision - the schedule is covered or it
+    isn't - and pressing Generate once per tab would be three chances to
+    forget the third. One file per tag, reported one line each.
+
+    Where the files go is on the button's tooltip. What *stops* them being
+    written stays where it can be fixed: each tag's own errors in its
+    fields (render_tag), and a split that doesn't add up under the link's
+    own schedule (`blocked`).
     """
-    tag = tag_for(tag_key)
-    if tag is None:
+    tags = [tag_for(key) for key in tag_keys_for(tag_key)]
+    tags = [tag for tag in tags if tag is not None]
+    if not tags:
         return
     link_id = tag_key
-    path = tagfile.target_path(tag)
-    where = f"Writes {path.name} to {path.parent}" + (
-        "  ·  test folder, not the day's own" if tagfile.TEST_MODE else ""
-    )
+    paths = [tagfile.target_path(tag) for tag in tags]
+    where = "Writes " + ", ".join(p.name for p in paths) + f" to {paths[0].parent}"
+    if tagfile.TEST_MODE:
+        where += "  ·  test folder, not the day's own"
 
     left, right = container.columns([1, 1], vertical_alignment="center")
     overwrite = left.checkbox(
         "Overwrite if it exists", key=_key(link_id, "overwrite")
     )
     if right.button(
-        "Generate tag file",
+        f"Generate tag file{'s' if len(tags) > 1 else ''}",
         type="primary",
         width="stretch",
-        disabled=bool(tag_errors(tag)),
+        disabled=blocked or any(tag_errors(tag) for tag in tags),
         help=where,
         key=_key(link_id, "generate"),
     ):
-        try:
-            written = tagfile.write_tag_file(tag, overwrite=overwrite)
-        except FileExistsError:
-            container.error(
-                f"{path.name} already exists. Give this tag another name, or "
-                "tick Overwrite."
-            )
-        except Exception as e:
-            container.error(f"Could not write the tag file: {e}")
-        else:
-            container.success(f"Tag written to {written}")
+        for tag, path in zip(tags, paths):
+            try:
+                written = tagfile.write_tag_file(tag, overwrite=overwrite)
+            except FileExistsError:
+                container.error(
+                    f"{path.name} already exists. Give this tag another name, "
+                    "or tick Overwrite."
+                )
+            except Exception as e:
+                container.error(f"Could not write {path.name}: {e}")
+            else:
+                container.success(f"Tag written to {written}")
 
 
 def _fill_paths_from_oasis(tag, link_id):
@@ -407,13 +502,22 @@ def render_tag_state(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_dat
     by, which is the whole point of asking (ui.scheduling.board). Set by
     hand: nothing on the board can work it out yet.
 
+    One state per *link*, written onto every tag it carries: the board
+    draws one line for a link however many paths it is split across, and a
+    line can only be one colour.
+
     The rerun is deliberate and is why this doesn't just write the tag and
     carry on. A dialog is a fragment, so a widget inside it reruns only the
     dialog — the board behind it would keep the old colour until the popup
     was closed. Re-arming first is what keeps the popup open across it, the
     same way the OASIS fill does (see render_tag).
     """
-    tag = ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date)
+    # follow_link=False: this is the link's header, and on a link split
+    # across several tags the first one owns its own share of the hours —
+    # the state radio has no business overwriting it with the link's total.
+    tag = ensure_tag(
+        tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, follow_link=False
+    )
     options = list(TAG_STATES)
     current = tag.get("state") or DEFAULT_TAG_STATE
     key = _widget_key(tag_key, "state")
@@ -431,7 +535,11 @@ def render_tag_state(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_dat
         ),
     )
     if chosen in TAG_STATES and chosen != current:
-        tag["state"] = chosen
+        # On every tag of the link, not just the first: the board draws one
+        # line per link and colours it by one state (see link_state), so
+        # tags of one link disagreeing would be a state nobody can see.
+        for key in tag_keys_for(tag_key) or [tag_key]:
+            tag_for(key)["state"] = chosen
         arm_dialog(LINK_DIALOG)
         st.rerun()
 
@@ -465,7 +573,7 @@ def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_d
     )
 
 
-def _apply_recipe(tag, link_id, match, sell_leg=None):
+def _apply_recipe(tag, link_id, match, buy_leg=None, sell_leg=None):
     """Copy one historical route onto this tag: its control areas, its
     source/sink points, its market path and its transmission reservation
     numbers — which is already enough for the OASIS lookup further down
@@ -476,8 +584,9 @@ def _apply_recipe(tag, link_id, match, sell_leg=None):
     (OATI carries none), and source/sink contract — nothing in the corpus
     maps to any of them. Nor a cell the market end itself settles: a link
     sinking into SWPW leaves the Sink cell empty whatever an old route put
-    in it (domain.tags.MARKET_SINK_FIELDS), because that end is known and
-    the route is only a guess.
+    in it (domain.tags.MARKET_END_FIELDS), because that end is known and
+    the route is only a guess. Either end, since a market is a market
+    whichever way the power runs.
 
     No rerun is needed here, unlike the OASIS fill. render_tag_lookup runs
     before render_tag's own field and table calls in the popup's own
@@ -489,7 +598,7 @@ def _apply_recipe(tag, link_id, match, sell_leg=None):
     sample = match["samples"][0] if match["samples"] else None
     if sample is None:
         return
-    settled = market_sink_fields(sell_leg)
+    settled = (market_end_fields(buy_leg), market_end_fields(sell_leg))
 
     if match["gca"]:
         tag["source"]["gca"] = match["gca"]
@@ -498,13 +607,17 @@ def _apply_recipe(tag, link_id, match, sell_leg=None):
         tag["sink"]["lca"] = match["lca"]
         _bump(link_id, "Sink_lca")
     for segment in sample["physical_path"]:
-        if segment["type"] == "G" and segment.get("por_name"):
+        if (
+            segment["type"] == "G"
+            and segment.get("por_name")
+            and "point" not in settled[0]
+        ):
             tag["source"]["point"] = segment["por_name"]
             _bump(link_id, "Source_point")
         elif (
             segment["type"] == "L"
             and segment.get("pod_name")
-            and "point" not in settled
+            and "point" not in settled[1]
         ):
             tag["sink"]["point"] = segment["pod_name"]
             _bump(link_id, "Sink_point")
@@ -644,7 +757,7 @@ def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_da
                 "Use this route", key=_key(link_id, f"use_{match['recipe_id']}")
             ):
                 st.session_state[_key(link_id, "lookup_note")] = _apply_recipe(
-                    tag, link_id, match, sell_leg
+                    tag, link_id, match, buy_leg, sell_leg
                 )
                 st.session_state[_key(link_id, "expander_open")] = True
 

@@ -12,10 +12,10 @@ import pytest
 
 from data.trade_string import parse_trade_string
 
-COUNTERPARTIES = ["AZPS", "BPAT", "EPE", "ABEX", "SRP", "CONC", "NEVP"]
+COUNTERPARTIES = ["AZPS", "BPAT", "EPE", "ABEX", "SRP", "CONC", "NEVP", "CORP"]
 LOCATIONS = [
     "PALOVERDE500", "MEAD230", "MIDC", "JohnDay", "SPRINGER345", "GLWND1",
-    "CROSSOVER", "NAVAJO500",
+    "CROSSOVER", "NAVAJO500", "MALIN500",
 ]
 INDEXES = ["PALOVERDE", "MONA", "MEAD230", "AESO", "MIDC"]
 SPECIFIED_SOURCES = [
@@ -187,6 +187,77 @@ class TestRealExamples:
 
 
 # --- Single-hour shapes (no dash) ------------------------------------------
+
+class TestTheSingleDayProducts:
+    """1x16 and 1x8: the desk's names for sixteen on-peak hours and the
+    eight off-peak ones on one named day. Written against the real
+    strings:
+
+        CORP sells 25mw sat 1x16 at midc $40
+        BPA sells 50mw sat 1x8 at midc $40
+    """
+
+    # A Thursday, with the desk trading Friday the 16th and Saturday the
+    # 17th — the example the desk gave.
+    THURSDAY = date(2026, 10, 15)
+    SATURDAY = date(2026, 10, 17)
+
+    def test_a_1x16_on_a_named_day(self):
+        r = parse("CORP sells 25mw sat 1x16 at midc $40", today=self.THURSDAY)
+        assert r.ok, r.errors
+        assert r.get("shape") == "1x16"
+        assert r.get("start_date") == r.get("end_date") == self.SATURDAY
+        assert (r.get("counterparty"), r.get("mw")) == ("CORP", 25.0)
+
+    def test_and_a_1x8(self):
+        r = parse("BPA sells 50mw sat 1x8 at midc $40", today=self.THURSDAY)
+        assert r.ok, r.errors
+        assert r.get("shape") == "1x8"
+        assert r.get("start_date") == self.SATURDAY
+
+    def test_a_day_in_the_string_is_taken_at_its_word(self):
+        # No warning: the string said which day, so there is nothing to
+        # flag — see the warning below for the case that needs one.
+        r = parse("CORP sells 25mw sat 1x16 at midc $40", today=self.THURSDAY)
+        assert r.warnings == []
+
+    def test_but_silence_about_the_day_is_flagged(self):
+        # The form's own default window is the whole trading session, and
+        # these cover one day of it.
+        r = parse("BPA sells 50mw 1x16 at midc $40", today=self.THURSDAY)
+        assert r.ok, r.errors
+        assert r.get("start_date") is None
+        assert any("single day" in w for w in r.warnings)
+
+    def test_a_flow_date_counts_as_saying_which_day(self):
+        r = parse(
+            "BPA sells 50mw 1x16 at midc $40 flow 10/17", today=self.THURSDAY
+        )
+        assert r.get("start_date") == self.SATURDAY
+        assert r.warnings == []
+
+    @pytest.mark.parametrize("written", ["1x16", "1X16", "1 x 16"])
+    def test_however_it_is_spaced(self, written):
+        r = parse(f"BPA sells 50mw sat {written} at midc $40", today=self.THURSDAY)
+        assert r.get("shape") == "1x16"
+
+    def test_it_does_not_swallow_an_ordinary_hour_range(self):
+        r = parse("BPA sells 50mw he1-16 at midc $40", today=self.THURSDAY)
+        assert r.get("shape") == "1-16"
+
+
+class TestCob:
+    def test_cob_is_the_same_point_as_malin(self):
+        # The California-Oregon Border; the desk writes either name.
+        r = parse("BPA sells 100MW LL at COB for $40")
+        assert r.ok, r.errors
+        assert r.get("location") == "MALIN500"
+
+    def test_as_malin_itself_still_is(self):
+        assert parse("BPA sells 100MW LL at MALIN for $40").get("location") == (
+            "MALIN500"
+        )
+
 
 class TestSingleHourShape:
     """A bare hour-ending like 'HE18' (no '-end') names a one-hour shape,

@@ -1,5 +1,7 @@
-"""Shape parsing (HL/LL/ATC/custom hour range) and turning a shape into an
-actual per-date set of hours, using the WECC on-/off-peak calendar.
+"""Shape parsing (HL/LL/ATC/1x16/1x8/custom hour range) and turning a shape
+into an actual per-date set of hours, using the WECC on-/off-peak calendar
+— except for the two shapes that deliberately don't ask it anything, which
+is the whole reason the desk writes them (FIXED_SHAPE_HOURS).
 """
 
 import re
@@ -18,8 +20,29 @@ SHAPE_ALIASES = {
     "ATC": "flat",
     "FLAT": "flat",
     "24H": "flat",
+    "1X16": "1x16",
+    "1X8": "1x8",
 }
 SHAPE_KIND_LABELS = {"on_peak": "HL", "off_peak": "LL", "flat": "ATC"}
+
+#: The two single-day products, as the hours they actually cover.
+#:
+#: They look like HL and LL and are deliberately not them. **HL and LL ask
+#: the WECC calendar what kind of day it is; these don't.** An HL leg flows
+#: no hours at all on an off-peak day, and an LL leg flows all twenty-four
+#: — which is exactly wrong for a 1x16 or a 1x8, whose whole purpose is
+#: naming a block of hours on one named day, weekend days included. "1x16
+#: on Saturday" is sixteen hours on Saturday; "HL on Saturday" is nothing.
+FIXED_SHAPE_HOURS = {
+    "1x16": tuple(range(7, 23)),
+    "1x8": tuple(range(1, 7)) + (23, 24),
+}
+
+#: What each one stores in the sheet's He column: the hours written out,
+#: never "1x16". The desk's own He format (data.bilateral.hours_to_he_string)
+#: and the only honest answer — "HL" would claim the WECC calendar had a
+#: say in it, and these are the shapes used precisely when it doesn't.
+FIXED_SHAPE_HE = {"1x16": "7-22", "1x8": "1-6,23-24"}
 
 HOUR_RANGE_RE = re.compile(r"^(\d{1,2})\s*-\s*(\d{1,2})$")
 SINGLE_HOUR_RE = re.compile(r"^(\d{1,2})$")
@@ -34,9 +57,15 @@ def parse_shape(shape_str):
     """
     s = (shape_str or "").strip().upper()
     if not s:
-        raise ValueError("Enter a shape: HL, LL, ATC, or an hour range like 7-22.")
-    if s in SHAPE_ALIASES:
-        return SHAPE_ALIASES[s], None, None
+        raise ValueError(
+            "Enter a shape: HL, LL, ATC, 1x16, 1x8, or an hour range like 7-22."
+        )
+    # Spaces squeezed out first, so "1 x 16" and "ON PEAK" are the shapes
+    # they obviously are. A trader typing into the Shape box is not
+    # writing the same way the parser normalizes a broker string.
+    squashed = s.replace(" ", "")
+    if squashed in SHAPE_ALIASES:
+        return SHAPE_ALIASES[squashed], None, None
 
     m = HOUR_RANGE_RE.match(s)
     if m:
@@ -45,7 +74,8 @@ def parse_shape(shape_str):
         m = SINGLE_HOUR_RE.match(s)
         if not m:
             raise ValueError(
-                f"Could not parse shape '{shape_str}'. Use HL, LL, ATC, or an hour range like 7-22."
+                f"Could not parse shape '{shape_str}'. Use HL, LL, ATC, "
+                "1x16, 1x8, or an hour range like 7-22."
             )
         start_he = end_he = int(m.group(1))
 
@@ -74,6 +104,8 @@ def shape_to_he(shape_str):
     parse_shape.
     """
     kind, start_he, end_he = parse_shape(shape_str)
+    if kind in FIXED_SHAPE_HE:
+        return FIXED_SHAPE_HE[kind]
     if kind in SHAPE_KIND_LABELS:
         return SHAPE_KIND_LABELS[kind]
     return str(start_he) if start_he == end_he else f"{start_he}-{end_he}"
@@ -112,7 +144,9 @@ def build_schedule(start_date, end_date, kind, mw, custom_start_he=None, custom_
     """Determine which hours get `mw` for each date in [start_date, end_date],
     using the WECC calendar to decide which hours are on-/off-peak per day.
 
-    kind is one of on_peak/off_peak/flat/custom, as returned by parse_shape.
+    kind is one of on_peak/off_peak/flat/custom/1x16/1x8, as returned by
+    parse_shape. The last two are fixed hour sets and never ask the
+    calendar anything — see FIXED_SHAPE_HOURS.
 
     Returns (hours_by_date, excluded_dates, missing_calendar_dates).
     hours_by_date: {date: set of HE to set to mw}. Dates with no entry (or
@@ -131,6 +165,8 @@ def build_schedule(start_date, end_date, kind, mw, custom_start_he=None, custom_
     while d <= end_date:
         if kind == "flat":
             hours = range(1, 25)
+        elif kind in FIXED_SHAPE_HOURS:
+            hours = FIXED_SHAPE_HOURS[kind]
         elif kind == "custom":
             hours = range(int(custom_start_he), int(custom_end_he) + 1)
         else:

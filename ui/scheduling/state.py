@@ -568,13 +568,76 @@ def find_link(link_id):
 PENDING_TAG = "pending"
 
 
+#: How a link's second and later tags are keyed off its own id: "L1",
+#: "L1_t2", "L1_t3". The first tag keeps the link's own key, so a link with
+#: one tag — the default, and the overwhelming majority — is filed exactly
+#: where it always was and nothing downstream of it has to know about
+#: splitting at all.
+#:
+#: Letters, digits and underscores only: these keys end up inside widget
+#: keys, and a widget key becomes a CSS class (`st-key-...`) the popup's own
+#: stylesheet matches on.
+TAG_PART = "_t"
+
+
+def tag_keys_for(link_key):
+    """Every tag this link carries, in order, or [] before the first one
+    exists. The link's own key first, then its splits."""
+    prefix = f"{link_key}{TAG_PART}"
+    extra = sorted(
+        (key for key in st.session_state.mv_tags if str(key).startswith(prefix)),
+        key=lambda key: _split_number(str(key), prefix),
+    )
+    first = [link_key] if link_key in st.session_state.mv_tags else []
+    return first + extra
+
+
+def _split_number(key, prefix):
+    tail = key[len(prefix):]
+    return int(tail) if tail.isdigit() else 0
+
+
+def add_tag(link_key, buy_leg, sell_leg, flow_date):
+    """A second (or third) tag on this link, and its key.
+
+    It starts with **no hours of its own**, which is what keeps the split
+    adding up at the moment it is made: everything is still on the tags
+    already there, and the trader moves hours across rather than finding
+    the link over-tagged the instant they press the button.
+
+    Its name is numbered, because two tags of one link would otherwise be
+    written to the same file — the sheet is named after the tag
+    (domain.tags.tag_filename), and a trader who renames them by path will
+    be overwriting the default either way.
+    """
+    number = len(tag_keys_for(link_key)) + 1
+    while f"{link_key}{TAG_PART}{number}" in st.session_state.mv_tags:
+        number += 1
+    key = f"{link_key}{TAG_PART}{number}"
+
+    tag = default_tag(buy_leg, sell_leg, {}, flow_date, pse_for=pse_for_market)
+    tag["name"] = f"{tag['name']} {number}"
+    # One link, one line on the board, one state — see link_state.
+    tag["state"] = link_state(link_key)
+    st.session_state.mv_tags[key] = tag
+    return key
+
+
+def remove_tag(tag_key):
+    """Drop one of a link's extra tags. Never the first: that one is keyed
+    by the link itself, and a link always has a tag."""
+    if TAG_PART not in str(tag_key):
+        return False
+    return st.session_state.mv_tags.pop(tag_key, None) is not None
+
+
 def tag_for(tag_key):
     """The tag being built under this key, or None if it hasn't been opened
     yet."""
     return st.session_state.mv_tags.get(tag_key)
 
 
-def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
+def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date, follow_link=True):
     """The tag under this key, raised from the link the first time it's
     asked for.
 
@@ -585,6 +648,12 @@ def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
     popup holds both the hours and the tag, so a tag showing an allocation
     the trader has already changed on screen would be a tag they have been
     given a reason to distrust.
+
+    `follow_link=False` for a caller that wants the tag but has no business
+    setting its hours — the state radio — and for a tag that owns its own
+    share of a split link, where the hours come from that tag's own editor
+    rather than from the link. A tag created on this call still takes the
+    schedule it was handed either way: there is nothing yet to protect.
     """
     tag = st.session_state.mv_tags.get(tag_key)
     if tag is None:
@@ -593,7 +662,8 @@ def ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
         )
         st.session_state.mv_tags[tag_key] = tag
     else:
-        tag["mw_by_hour"] = {int(h): float(mw) for h, mw in mw_by_hour.items()}
+        if follow_link:
+            tag["mw_by_hour"] = {int(h): float(mw) for h, mw in mw_by_hour.items()}
         tag["flow_date"] = flow_date
     return tag
 
@@ -617,22 +687,29 @@ def link_states(links):
 def rename_tag(old_key, new_key):
     """Move a tag onto its link once that link exists.
 
-    Only the dict moves. The widgets keep the old key in their names and are
+    Every tag the link carries moves, not just the first — a link split
+    across several paths before it was created keeps all of them.
+
+    Only the dicts move. The widgets keep the old key in their names and are
     dropped when the popup next opens (clear_tag_widgets) — not now, while
     they are still on screen. Nothing is lost either way: every field is
     copied into the tag as it's typed, so the next run re-seeds them from it
     under the new names.
     """
-    tag = st.session_state.mv_tags.pop(old_key, None)
-    if tag is None:
-        return None
-    st.session_state.mv_tags[new_key] = tag
-    return tag
+    first = None
+    for key in tag_keys_for(old_key):
+        tag = st.session_state.mv_tags.pop(key)
+        st.session_state.mv_tags[new_key + key[len(old_key):]] = tag
+        first = first or tag
+    return first
 
 
 def forget_tag(tag_key):
-    """Drop a tag. The widgets that were showing it are left alone — see
-    clear_tag_widgets for why that has to wait."""
+    """Drop a tag and any the same link was split into. The widgets that
+    were showing them are left alone — see clear_tag_widgets for why that
+    has to wait."""
+    for key in tag_keys_for(tag_key):
+        st.session_state.mv_tags.pop(key, None)
     st.session_state.mv_tags.pop(tag_key, None)
 
 
@@ -725,9 +802,13 @@ __all__ = [
     "hide_leg",
     "highlighted_keys",
     "init_matching_state",
+    "add_tag",
     "leg_or_market",
     "link_state",
     "link_states",
+    "remove_tag",
+    "TAG_PART",
+    "tag_keys_for",
     "legs_by_key",
     "load_legs",
     "market_leg",

@@ -3,7 +3,17 @@
 -Add coloring for NWS, NCS, SS/ACS attributes and don't allow links CISO>NCS and NWS>!NWS
 -add defaults to GCA/LCA in SWPW bid files
 -Add hourly open positions
--Improve creation of tag files, input-to-excel fill is not right
+-Improve creation of tag files, input-to-excel fill is not right (have bilaterals be source or sink, not the market name)
+-Find a way to better handle multi-day tagging (a lot of repetitive actions for each day are happening)
+-Autofill splitted tags hourly mw schedule
+-allow to generate split tags individually
+-create one excel file for multiple split tags
+-Change the destination of the tag files to the actual date folder
+-Allow user to see more tag routes if necessary
+-Recognize COB in the trade string
+-Have state of links follow tag state and update automatically
+-Change the trade hash to take into account the communication (two identical trades outside the communication are not allowed to be entered currently)
+-Move tagged deals to another canvas
 -Tagging workflows
     -DONE (v1): clicking a link opens the tag fields under the schedule in
      one popup — market path, GCA/LCA, source/sink, transmission
@@ -63,11 +73,26 @@
     -DONE (v6): the OASIS path fill no longer overrules a scheduler who
      empties the cell — a blank Path is filled once per reference, and a
      path of its own that goes stale still follows a changed number.
+    -DONE (v6): what each market settles about the end of a link reaching
+     it, as a table the desk can extend: the header piece, the Market cell
+     and the control area for CAISO, AESO, SWPW and SWPP, none of which is
+     the market's own name. CEN is left out until its own workbooks are
+     handled.
+    -DONE (v6): a quick-fill box per tag — one MW across every hour the
+     link runs, since most tags carry the same number all day.
+    -DONE (v6): found the data editor bug for real. `height` is hashed into
+     a data editor's element id, so sizing an editor to its rows renamed it
+     the moment a row went, and the deletion was looked up under a name
+     that held nothing. Seed and identity now move together.
     -TODO: warn before Generate when a tag matches no route we have ever
      run — the cheapest typo-catcher available now the corpus exists.
-    -TODO: split MW across several tags — several paths — from one link.
-     Wanted first for the 2b) links below, where it is the only thing left
-     the string handling can't do.
+    -DONE (v6): one link, several tags. The popup carries a tab per path
+     the schedule is split down ("Split", up to six), each with its own
+     hours, path string, lookup and fields; the link above them is
+     unchanged. A check under the link's own total says so whenever the
+     shares stop adding up to it, in either direction, and blocks Generate
+     — which writes every tag of the link in one press. A new tag starts
+     with no hours, so a split adds up the moment it is made.
     -TODO: tell the three kinds of tag apart, and let the popup say which
      one a link is. 1) MAG has to tag it. 2a) MAG doesn't, but its
      information is needed to. 2b) MAG doesn't and its information isn't

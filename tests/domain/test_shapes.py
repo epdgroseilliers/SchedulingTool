@@ -52,6 +52,49 @@ class TestParseShape:
             parse_shape("22-7")
 
 
+class TestTheTwoSingleDayProducts:
+    """1x16 and 1x8 look like HL and LL and deliberately aren't them: HL
+    and LL ask the WECC calendar what kind of day it is, these name their
+    hours outright. That is the whole reason the desk writes them — they
+    are used on one named day, weekend days included."""
+
+    SATURDAY = date(2026, 10, 17)
+
+    @pytest.mark.parametrize("written,kind", [
+        ("1x16", "1x16"), ("1X16", "1x16"), ("1 x 16", "1x16"),
+        ("1x8", "1x8"), ("1X8", "1x8"), ("1 X 8", "1x8"),
+    ])
+    def test_how_they_are_written(self, written, kind):
+        assert parse_shape(written)[0] == kind
+
+    def test_1x16_is_the_sixteen_on_peak_hours(self):
+        hours, _, _ = build_schedule(
+            self.SATURDAY, self.SATURDAY, "1x16", 25.0
+        )
+        assert hours[self.SATURDAY] == set(range(7, 23))
+
+    def test_1x8_is_the_eight_off_peak_ones(self):
+        hours, _, _ = build_schedule(self.SATURDAY, self.SATURDAY, "1x8", 25.0)
+        assert hours[self.SATURDAY] == set(range(1, 7)) | {23, 24}
+
+    def test_neither_asks_the_calendar_anything(self):
+        # Which is the point. An HL leg flows *no* hours on a Saturday and
+        # an LL leg flows all twenty-four; a 1x16 on a Saturday is sixteen
+        # hours on Saturday. This test runs with no database at all.
+        hours, excluded, missing = build_schedule(
+            self.SATURDAY, self.SATURDAY, "1x16", 25.0
+        )
+        assert not excluded and not missing
+
+    def test_they_are_stored_as_the_hours_they_cover(self):
+        # Never as "1x16": the He column's HL and LL mean "whatever the
+        # calendar says", and these mean exactly these hours.
+        assert shape_to_he("1x16") == "7-22"
+        assert shape_to_he("1x8") == "1-6,23-24"
+        assert shape_label("1x16") is None
+        assert shape_label("1x8") is None
+
+
 class TestShapeLabel:
     def test_hl_ll_atc_map_to_themselves(self):
         assert shape_label("HL") == "HL"

@@ -79,6 +79,45 @@ class TestFillsFormOnCleanParse:
         assert ss["mw_0"] == 50
 
 
+class TestTheSingleDayProductsThroughTheApp:
+    """A 1x16 has to reach the grid as sixteen real hours, including on a
+    weekend day where an HL would flow none at all."""
+
+    def test_a_1x16_fills_the_sixteen_on_peak_hours(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "CORP sells 25mw sat 1x16 at midc $40")
+        assert not at.error, [e.value for e in at.error]
+        ss = at.session_state
+        assert ss["shape_0"] == "1x16"
+        assert ss["mw_0"] == 25
+
+        row = at.dataframe[0].value.iloc[0]
+        assert [h for h in range(1, 25) if row[str(h)] > 0] == list(range(7, 23))
+        assert row["7"] == 25.0
+
+    def test_and_lands_on_the_saturday_it_names(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "CORP sells 25mw sat 1x16 at midc $40")
+        assert at.session_state["start_0"].weekday() == 5   # Saturday
+        assert at.session_state["start_0"] == at.session_state["end_0"]
+
+    def test_a_1x8_fills_the_eight_off_peak_ones(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "BPA sells 50mw sat 1x8 at midc $40")
+        assert not at.error, [e.value for e in at.error]
+        assert at.session_state["shape_0"] == "1x8"
+        row = at.dataframe[0].value.iloc[0]
+        assert [h for h in range(1, 25) if row[str(h)] > 0] == (
+            list(range(1, 7)) + [23, 24]
+        )
+
+    def test_cob_reaches_the_form_as_malin(self):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, "BPA sells 100MW LL at COB for $40")
+        assert not at.error, [e.value for e in at.error]
+        assert at.session_state["location"] == "MALIN500"
+
+
 class TestRejectsIncompleteString:
     def test_bad_string_shows_errors_and_fills_nothing(self):
         at = AppTest.from_file(APP_PATH, default_timeout=120).run()

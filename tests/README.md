@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-968 tests total: all but 26 run with no network dependency beyond what
+1,042 tests total: all but 26 run with no network dependency beyond what
 rendering the app already needs (see below); those 26 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them, and a couple skip on a weekday whose WECC trading
@@ -22,7 +22,12 @@ tests/
     test_options.py
     test_grid.py
     test_shapes.py           parse_shape/build_schedule(flat|custom) are pure;
-                              build_schedule(on_peak|off_peak) is marked db
+                              build_schedule(on_peak|off_peak) is marked db.
+                              1x16 and 1x8 are pure too, which is the point
+                              of them: they name their hours outright
+                              instead of asking the calendar, so a 1x16 on
+                              a Saturday is sixteen hours where an HL is
+                              none
     test_trade.py
     test_matching.py        Phase 2: He re-expansion, legs, links, open
                              positions, market squares — the flow date's peak
@@ -34,8 +39,14 @@ tests/
                              codes, via a lookup passed in), that same chain
                              written as the opening path string for the
                              scheduler chat, the two sheet cells derived from
-                             that chain, what stops a tag being written, and
-                             how the desk names its tag files and day folders
+                             that chain, what each market settles about an
+                             end of a link reaching it (one case per row of
+                             MARKET_END_FIELDS, with a guard that a market
+                             can't be added to the table without one here),
+                             whether a link's tags still add up to its own
+                             schedule, what stops a tag being written, and
+                             how the desk names its tag files and day
+                             folders
     test_tag_recipes.py     Phase 3: a tag reduced to the route it follows —
                              the golden signature for the desk's own
                              ABEX-SWPW tag, what it deliberately ignores
@@ -66,7 +77,10 @@ tests/
                              another control area is not
   data/
     test_trade_string.py    the broker-string parser — pure, the most
-                             heavily-exercised code in the app
+                             heavily-exercised code in the app. Includes the
+                             desk's single-day products (a day named beside
+                             one is taken at its word; silence is warned
+                             about) and COB as another name for Malin
     test_bilateral.py       pure: He-string collapsing, schedule compression,
                              price/int formatting, generated-SQL shape
                              (checked against a fake connection)
@@ -164,7 +178,13 @@ tests/
                               shared counterparty surfaces a route; who
                               still has to tag the link, which defaults to
                               MAG and rides onto the link when it is
-                              created; what sinking into SWPW fills in by
+                              created; splitting a link across several tags
+                              — a tab each, each with its own hours, path
+                              string and fields, the check that says when
+                              the shares stop adding up to the link, and
+                              Generate writing one file per tag in one
+                              press, and the quick-fill box that puts one MW
+                              on every hour the link runs; what sinking into SWPW fills in by
                               itself and what it keeps an old route from
                               filling; and that a Path cell emptied by hand
                               stays empty (stubbed

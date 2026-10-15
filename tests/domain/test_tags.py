@@ -9,6 +9,7 @@ import pytest
 from domain.matching import BUY, SELL, TradeLeg
 from domain.tags import (
     DEFAULT_TAG_STATE,
+    MARKET_END_FIELDS,
     GENERATOR_PRODUCT,
     PATH_UNKNOWN,
     LOAD_PRODUCT,
@@ -25,7 +26,8 @@ from domain.tags import (
     market_path_rows,
     safe_name,
     TAG_STATES,
-    market_sink_fields,
+    market_end_fields,
+    split_difference,
     sink_pse,
     source_pse,
     tag_errors,
@@ -248,25 +250,77 @@ class TestWhatAMarketEndSettlesByItself:
         tag = default_tag(
             leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
         )
-        assert tag["label"] == "EPE-SWPW(CRSP)"
+        assert tag["label"] == "SOURCE-SWPW(CRSP)"
 
-    def test_leaving_the_sink_cell_empty(self):
+    # (market, header piece, Market cell, control area) exactly as the desk
+    # gave them. Three of the four write something in the Market cell that
+    # is neither the trading name nor the control area.
+    TABLE = [
+        ("CAISO", "CAISO(??)", "CISO", "CISO"),
+        ("AESO", "AESO(??)", "AESO", "AESO"),
+        ("SWPW", "SWPW(CRSP)", "SPP", "SWPW"),
+        ("SWPP", "SWPP(??)", "SPP", "SWPP"),
+    ]
+
+    @pytest.mark.parametrize("market, piece, cell, area", TABLE)
+    def test_selling_into_each_market(self, market, piece, cell, area):
         tag = default_tag(
-            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+            leg(BUY, "EPE"), leg(SELL, market, source="market"), {1: 1.0}, FLOW
+        )
+        # The other end is written as the side it is on, not as whoever
+        # is standing there.
+        assert tag["label"] == f"SOURCE-{piece}"
+        assert tag["sink"]["market"] == cell
+        assert tag["sink"]["lca"] == area
+
+    @pytest.mark.parametrize("market, piece, cell, area", TABLE)
+    def test_and_buying_out_of_each_one(self, market, piece, cell, area):
+        # The same table the other way round: a market is a market whichever
+        # way the power runs, and the desk gave both orderings.
+        tag = default_tag(
+            leg(BUY, market, source="market"), leg(SELL, "EPE"), {1: 1.0}, FLOW
+        )
+        assert tag["label"] == f"{piece}-SINK"
+        assert tag["source"]["market"] == cell
+        assert tag["source"]["gca"] == area
+
+    def test_every_market_on_file_is_covered_here(self):
+        # The next spec the desk gives is another row in MARKET_END_FIELDS;
+        # this is what stops it arriving without one here.
+        assert {market for market, *_ in self.TABLE} == set(MARKET_END_FIELDS)
+
+    @pytest.mark.parametrize("market, piece, cell, area", TABLE)
+    def test_no_market_end_fills_the_sheets_own_point_cell(self, market, piece, cell, area):
+        # A market end names its node in the header; the Source/Sink cell
+        # on that side stays empty, and an old route may not fill it.
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, market, source="market"), {1: 1.0}, FLOW
         )
         assert tag["sink"]["point"] == ""
-        # And says so, so the route lookup knows not to fill it either.
-        assert "point" in market_sink_fields(leg(SELL, "SWPW", source="market"))
+        assert market_end_fields(leg(SELL, market, source="market"))["point"] == ""
 
-    def test_a_market_with_no_convention_on_file_keeps_its_own_name(self):
+    def test_a_node_nobody_has_named_reads_like_the_path_strings_own(self):
+        # The scheduling point isn't known when a link is drawn, and `??` is
+        # already what this desk writes for a party nobody has named.
         tag = default_tag(
-            leg(BUY, "EPE"), leg(SELL, "CAISO", source="market"), {1: 1.0}, FLOW
+            leg(BUY, "EPE"), leg(SELL, "SWPP", source="market"), {1: 1.0}, FLOW
         )
-        assert tag["sink"]["market"] == "CAISO"
-        assert tag["label"] == "SOURCE-SINK"
+        assert PATH_UNKNOWN in tag["label"]
 
-    def test_a_counterparty_end_settles_nothing(self):
-        assert market_sink_fields(leg(SELL, "SWPW")) == {}
+    def test_cen_is_left_alone_until_its_own_workbooks_are_handled(self):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "CEN", source="market"), {1: 1.0}, FLOW
+        )
+        assert tag["sink"]["market"] == "CEN"
+        assert tag["label"] == "SOURCE-SINK"
+        # Its control area still follows, which is a fact about the link
+        # rather than a convention about its workbook.
+        assert tag["sink"]["lca"] == "CEN"
+
+    def test_two_counterparties_settle_nothing_at_all(self):
+        tag = default_tag(leg(BUY, "EPE"), leg(SELL, "BPAT"), {1: 1.0}, FLOW)
+        assert tag["label"] == "SOURCE-SINK"
+        assert market_end_fields(leg(SELL, "SWPW")) == {}
 
 
 class TestWhoStillHasToTagIt:
@@ -365,6 +419,46 @@ class TestReadingWhatTheEditorHandsBack:
         assert market_path_rows(tag)[0]["product"] == "L"
         assert transmission_rows(tag)[0]["reservation"] == "1107"
         assert carbon_copy_rows(tag)[0] == {"type": "BA", "market": "EPE"}
+
+
+class TestWhetherTheTagsStillAddUpToTheLink:
+    """One link can be tagged along several paths, which makes the shares
+    a thing that can be wrong. Whatever the trader does with them, the
+    shares are still the link."""
+
+    LINK = {h: 100.0 for h in range(7, 23)}
+
+    def test_one_tag_carrying_the_lot_is_the_link(self):
+        assert split_difference(self.LINK, [dict(self.LINK)]) == {}
+
+    def test_and_so_are_two_halves(self):
+        half = {h: 50.0 for h in range(7, 23)}
+        assert split_difference(self.LINK, [half, dict(half)]) == {}
+
+    def test_hours_can_be_split_as_well_as_mw(self):
+        # A path for the morning and a path for the afternoon is a split
+        # like any other, and an hour missing from a share is zero on it.
+        morning = {h: 100.0 for h in range(7, 15)}
+        afternoon = {h: 100.0 for h in range(15, 23)}
+        assert split_difference(self.LINK, [morning, afternoon]) == {}
+
+    def test_what_is_left_untagged_shows_up_as_short(self):
+        assert split_difference(self.LINK, [{7: 40.0}])[7] == -60.0
+
+    def test_and_what_is_tagged_twice_shows_up_as_over(self):
+        assert split_difference({7: 40.0}, [{7: 40.0}, {7: 10.0}])[7] == 10.0
+
+    def test_only_the_hours_that_disagree_are_reported(self):
+        one_hour_wrong = {**self.LINK, 9: 10.0}
+        assert list(split_difference(self.LINK, [one_hour_wrong])) == [9]
+
+    def test_no_tags_at_all_is_the_whole_link_untagged(self):
+        assert split_difference({7: 25.0}, []) == {7: -25.0}
+
+    def test_a_rounding_crumb_is_not_a_discrepancy(self):
+        # These are MW a trader typed; a float's last bit is not something
+        # anyone can act on.
+        assert split_difference({7: 0.3}, [{7: 0.1}, {7: 0.2}]) == {}
 
 
 class TestWhatStopsATagBeingWritten:

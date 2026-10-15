@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import openpyxl
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -18,6 +19,7 @@ import data.tagfiles.bilateral as tagfile
 from dialog_helpers import let_go_of_closed_widgets
 from domain.tags import MAG_PSE
 from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG, PENDING_TAG
+from ui.scheduling.tag import seed_is_stale, table_height
 
 PAGE_PATH = str(Path(__file__).resolve().parents[2] / "pages" / "1_Scheduling_View.py")
 FLOW = date.today() + timedelta(days=1)
@@ -765,6 +767,47 @@ class TestALinkIntoAMarket:
         assert "CISO_HUB" not in shown
 
 
+class TestAnEditorNeverOutlivesItsOwnHeight:
+    """Why a deleted row used to come back the moment anything else was
+    touched.
+
+    An editor is sized to the rows it holds, and `height` is one of the
+    properties Streamlit hashes into a data editor's element id. So the run
+    *after* a deletion handed the widget a new id, looked the trader's diff
+    up under a name that held nothing, and returned the old seed untouched.
+    Traced in Chrome against the live app:
+
+        run 1  in=3  state={deleted_rows: [1]}  out=2
+        run 2  in=2  state={deleted_rows: [1]}  out=3
+
+    Tested here as the rule itself rather than through the page: AppTest
+    carries no data editor state between runs at all, so the editor is
+    remounted on every run there and neither the bug nor the fix is visible
+    — a page-level test would pass either way. The browser is where this
+    one is checked; see PROJECT.md.
+    """
+
+    def test_the_seed_moves_whenever_the_height_does(self):
+        for count in range(0, 8):
+            before = [{"reservation": str(i)} for i in range(count)]
+            after = before + [{"reservation": "new"}]
+            if table_height(before) == table_height(after):
+                continue  # under MIN_TABLE_ROWS the editor doesn't resize
+            assert seed_is_stale(pd.DataFrame(before), after), count
+
+    def test_and_a_row_deleted_moves_it_the_same_way(self):
+        seed = pd.DataFrame([{"reservation": "a"}, {"reservation": "b"}])
+        assert seed_is_stale(seed, [{"reservation": "a"}])
+
+    def test_but_typing_within_a_row_leaves_it_alone(self):
+        # The other half of the rule: a seed that moved on every keystroke
+        # would rename the widget mid-edit and drop the *next* edit.
+        seed = pd.DataFrame([{"reservation": "a"}, {"reservation": "b"}])
+        assert not seed_is_stale(
+            seed, [{"reservation": "109267045"}, {"reservation": "b"}]
+        )
+
+
 class TestADeletionThatHasToStick:
     def test_a_path_cell_emptied_by_hand_stays_empty(self):
         # The lookup fills a blank Path once. After that the cell is the
@@ -780,6 +823,206 @@ class TestADeletionThatHasToStick:
         # And stays empty through whatever is touched next.
         at = _fill(at, gca="GWA2")
         assert _transmissions(at)[0]["path"] == ""
+
+
+class TestSplittingALinkAcrossSeveralTags:
+    """One schedule, several paths, several tags. The default is still one —
+    a link opens the way it always did — and the thing that has to hold
+    however it is split is that the tags add up to the link."""
+
+    def _edit(self, mw, hours=range(7, 23)):
+        """One tag's share, the way Streamlit stores an edit to the hour
+        grid — see test_multiday_links.py, same idiom."""
+        return {
+            "edited_rows": {0: {str(h): float(mw) for h in hours}},
+            "added_rows": [], "deleted_rows": [],
+        }
+
+    def _hours(self, at, tag_key, mw, hours=range(7, 23)):
+        at.session_state[f"mv_tag_{tag_key}_hours"] = self._edit(mw, hours)
+        return _in_dialog(at).run()
+
+    def test_a_link_opens_with_one_tag_and_no_tabs(self):
+        at = _tagging()
+        assert list(at.session_state["mv_tags"]) == ["L1"]
+        assert not at.tabs
+
+    def test_splitting_gives_it_a_second(self):
+        at = _click(_tagging(), "Split")
+        assert list(at.session_state["mv_tags"]) == ["L1", "L1_t2"]
+        assert [tab.label for tab in at.tabs] == ["Tag 1", "Tag 2"]
+
+    def test_the_new_one_starts_with_no_hours_of_its_own(self):
+        # So the split still adds up the moment it is made: everything is
+        # on the tag that was already there, and the trader moves hours
+        # across rather than finding the link over-tagged on the way in.
+        at = _click(_tagging(), "Split")
+        assert _tag(at, "L1_t2")["mw_by_hour"] == {}
+        assert _tag(at)["mw_by_hour"]
+        # And the split adds up on the way in, so the check says nothing.
+        assert not [e for e in at.error if "carry" in e.value]
+
+    def test_and_a_name_that_does_not_collide_with_the_first(self):
+        # Two tags of one link would otherwise be written to one file.
+        at = _click(_tagging(), "Split")
+        assert _tag(at)["name"] != _tag(at, "L1_t2")["name"]
+
+    def test_each_tag_carries_its_own_path_string(self):
+        at = _click(_tagging(), "Split")
+        at = _paste_path(at, "??-APS01-MAG001-SOMEONE-??", link_id="L1_t2")
+        assert _tag(at, "L1_t2")["path_string"] == "??-APS01-MAG001-SOMEONE-??"
+        assert _tag(at)["path_string"] == OPENING_PATH
+
+    def test_and_its_own_fields(self):
+        at = _click(_tagging(), "Split")
+        at.text_input("mv_tag_L1_t2_Source_gca").set_value("GWA")
+        at = _in_dialog(at).run()
+        assert _tag(at, "L1_t2")["source"]["gca"] == "GWA"
+        assert _tag(at)["source"]["gca"] == ""
+
+    def test_moving_hours_onto_the_second_tag_leaves_the_link_over_tagged(self):
+        # Until the first one gives them up — which is the whole point of
+        # the check.
+        at = self._hours(_click(_tagging(), "Split"), "L1_t2", 60)
+        assert any("more than this link" in e.value for e in at.error)
+
+    def test_and_taking_too_many_off_the_first_leaves_it_short(self):
+        at = _click(_tagging(), "Split")
+        at = self._hours(at, "L1", 10)
+        assert any("less than this link" in e.value for e in at.error)
+
+    def test_a_split_that_adds_up_says_nothing(self):
+        # Both shares in one run: AppTest carries no data editor state
+        # between runs, so typing into one grid and then the other would
+        # lose the first edit here — a limitation of the harness, not of
+        # the page (see TestAnEditorNeverOutlivesItsOwnHeight).
+        at = _click(_tagging(), "Split")
+        at.session_state["mv_tag_L1_hours"] = self._edit(20)
+        at.session_state["mv_tag_L1_t2_hours"] = self._edit(40)
+        at = _in_dialog(at).run()          # the link carries 60
+        assert not [e for e in at.error if "carry" in e.value]
+
+    def _fill(self, at, tag_key, mw):
+        """Type one MW into that tab's fill box and press its own Fill —
+        every tab has one, so the button has to be picked by key."""
+        at.number_input(f"mv_tag_{tag_key}_fill").set_value(mw)
+        at = _in_dialog(at).run()
+        key = f"mv_tag_{tag_key}_fill_go"
+        [b for b in _in_dialog(at).button if b.key == key][0].click().run()
+        return _in_dialog(at).run()
+
+    def test_one_mw_can_be_filled_across_every_hour_at_once(self):
+        # Most tags carry the same MW all day, and typing it into twenty-four
+        # cells is twenty-four chances to fat-finger one.
+        at = self._fill(_click(_tagging(), "Split"), "L1_t2", 15.0)
+        assert _tag(at, "L1_t2")["mw_by_hour"] == {h: 15.0 for h in range(7, 23)}
+
+    def test_and_only_across_the_hours_the_link_runs(self):
+        # An hour the link doesn't run is an hour this tag can't have, and
+        # filling it would only hand the trader a check to clear.
+        at = self._fill(_click(_tagging(), "Split"), "L1_t2", 15.0)
+        assert set(_tag(at, "L1_t2")["mw_by_hour"]) == set(_tag(at)["mw_by_hour"])
+
+    def test_the_grid_shows_what_was_filled(self):
+        # A fill the trader can't see is a fill they'll do again by hand.
+        at = self._fill(_click(_tagging(), "Split"), "L1_t2", 15.0)
+        assert at.session_state["mv_tag_L1_t2_hours_seed"] == {
+            h: 15.0 for h in range(7, 23)
+        }
+        assert at.session_state["mv_tag_L1_t2_hours_ver"] == 1
+
+    def test_nothing_is_filled_until_a_number_is_typed(self):
+        at = _click(_tagging(), "Split")
+        assert [b for b in at.button if b.label == "Fill"][0].disabled
+
+    def test_removing_a_tag_puts_the_link_back_the_way_it_was(self):
+        at = _click(_tagging(), "Split")
+        at = _click(at, "Remove")
+        assert list(at.session_state["mv_tags"]) == ["L1"]
+        assert not at.tabs
+
+    def test_the_first_tag_can_never_be_removed(self):
+        # It is keyed by the link itself, and a link always has a tag.
+        at = _click(_tagging(), "Split")
+        assert len([b for b in at.button if b.label == "Remove"]) == 1
+
+    def test_a_link_still_being_drawn_can_be_split_too(self):
+        at = _click(_drawing(), "Split")
+        assert sorted(at.session_state["mv_tags"]) == ["pending", "pending_t2"]
+
+    def test_and_both_move_onto_the_link_when_it_is_created(self):
+        at = _click(_drawing(), "Split")
+        at = _click(at, "Create link")
+        assert sorted(at.session_state["mv_tags"]) == ["L1", "L1_t2"]
+
+    def test_abandoning_a_split_link_takes_every_tag_with_it(self):
+        at = _click(_drawing(), "Split")
+        at = _click(at, "Cancel")
+        assert at.session_state["mv_tags"] == {}
+
+    def test_deleting_the_link_does_too(self):
+        at = _click(_tagging(), "Split")
+        at = _click(at, "Delete")
+        assert at.session_state["mv_tags"] == {}
+
+    def test_one_state_covers_every_tag_of_a_link(self):
+        # The board draws one line per link, and a line is one colour.
+        at = _click(_tagging(), "Split")
+        at.radio("mv_tag_L1_state").set_value("tagged")
+        at = _in_dialog(at).run()
+        assert _tag(at)["state"] == "tagged"
+        assert _tag(at, "L1_t2")["state"] == "tagged"
+
+
+class TestGeneratingASplitLinksTags:
+    def _ready(self, at, link_id):
+        """Fill in what a tag needs before it can be written."""
+        at.text_input(f"mv_tag_{link_id}_Source_gca").set_value("GWA")
+        at.text_input(f"mv_tag_{link_id}_Sink_lca").set_value("BPAT")
+        return _in_dialog(at).run()
+
+    def _edit(self, mw):
+        return {
+            "edited_rows": {0: {str(h): float(mw) for h in range(7, 23)}},
+            "added_rows": [], "deleted_rows": [],
+        }
+
+    def test_one_press_writes_a_file_for_every_tag(self, redirect_tags):
+        at = _click(_tagging(), "Split")
+        for key in ("L1", "L1_t2"):
+            at.text_input(f"mv_tag_{key}_Source_gca").set_value("GWA")
+            at.text_input(f"mv_tag_{key}_Sink_lca").set_value("BPAT")
+        at.session_state["mv_tag_L1_hours"] = self._edit(20)
+        at.session_state["mv_tag_L1_t2_hours"] = self._edit(40)   # 60 on the link
+        at = _in_dialog(at).run()
+        assert not at.error
+
+        at = _click(at, "Generate tag files")
+        assert len(list(redirect_tags.rglob("*.xlsx"))) == 2
+
+    def test_a_split_that_does_not_add_up_is_not_written_at_all(self):
+        # Both tags are complete in themselves — hours, GCA, LCA — and the
+        # only thing wrong is that 20 and 30 are not the 60 on the link.
+        #
+        # Every field in one run: AppTest carries no data editor state
+        # between runs, so filling the fields on a later one would take the
+        # typed hours back out again.
+        at = _click(_tagging(), "Split")
+        for key in ("L1", "L1_t2"):
+            at.text_input(f"mv_tag_{key}_Source_gca").set_value("GWA")
+            at.text_input(f"mv_tag_{key}_Sink_lca").set_value("BPAT")
+        at.session_state["mv_tag_L1_hours"] = self._edit(20)
+        at.session_state["mv_tag_L1_t2_hours"] = self._edit(30)
+        at = _in_dialog(at).run()
+
+        assert not [e for e in at.error if "required" in e.value]
+        assert any("less than this link" in e.value for e in at.error)
+        assert [b for b in at.button if b.label.startswith("Generate")][0].disabled
+
+    def test_an_unsplit_link_still_writes_the_one(self, redirect_tags):
+        at = self._ready(_tagging(), "L1")
+        at = _click(at, "Generate tag file")
+        assert len(list(redirect_tags.rglob("*.xlsx"))) == 1
 
 
 class TestWhoStillHasToTagThisLink:
@@ -823,7 +1066,7 @@ class TestWhatSinkingIntoSwpwFillsIn:
         return _tagging(trades=(BUY_LEG,), frm="session:0", market="SWPW")
 
     def test_the_header_names_the_delivery_point(self):
-        assert _tag(self._into_swpw())["label"] == "AZPS-SWPW(CRSP)"
+        assert _tag(self._into_swpw())["label"] == "SOURCE-SWPW(CRSP)"
 
     def test_the_market_cell_is_the_pool_and_the_lca_the_market(self):
         tag = _tag(self._into_swpw())

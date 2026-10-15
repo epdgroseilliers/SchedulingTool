@@ -71,6 +71,22 @@ _FOLDER = re.compile(
 )
 
 
+#: What the header calls an end that isn't a market: the side it is on,
+#: not who is standing there. A counterparty's own name goes in the Market
+#: cell and in the market path, and the header line is about the shape of
+#: the deal rather than the parties to it.
+SOURCE_LABEL, SINK_LABEL = "SOURCE", "SINK"
+
+
+#: What stands in for an end of the path nobody has named yet.
+#:
+#: The desk's chat strings are built outward from the middle. The two PSEs
+#: either side of MAG are settled the moment the trade is done; everything
+#: past them — who generates, who sinks, which wires carry it — is filled in
+#: over the back-and-forth with the other schedulers. So the opening offer
+#: is the part that is already certain, with a placeholder at each end.
+PATH_UNKNOWN = "??"
+
 def blank_tag(flow_date=None):
     """Every field a tag carries, empty. The shape everything else assumes.
 
@@ -81,9 +97,10 @@ def blank_tag(flow_date=None):
     """
     return {
         "flow_date": flow_date,
-        # The sheet's own header line, e.g. "SOURCE-SWPW(WAUW)". Free text
-        # in every real file, so free text here.
-        "label": "SOURCE-SINK",
+        # The sheet's own header line, e.g. "SOURCE-SWPW(CRSP)". Free text
+        # in every real file, so free text here — see default_label for
+        # what a link makes of it.
+        "label": f"{SOURCE_LABEL}-{SINK_LABEL}",
         # What the file is named after, following the counterparties by
         # default: "ABEX-SWPW" in "… - September 25 2026 - ABEX-SWPW.xlsx".
         "name": "",
@@ -145,15 +162,6 @@ def default_market_path(buy_leg, sell_leg, pse_for=None):
     return rows
 
 
-#: What stands in for an end of the path nobody has named yet.
-#:
-#: The desk's chat strings are built outward from the middle. The two PSEs
-#: either side of MAG are settled the moment the trade is done; everything
-#: past them — who generates, who sinks, which wires carry it — is filled in
-#: over the back-and-forth with the other schedulers. So the opening offer
-#: is the part that is already certain, with a placeholder at each end.
-PATH_UNKNOWN = "??"
-
 #: How the chain marks the end MAG itself stands at — generator or sink.
 #: Only reached when that end is a market, because that is the only way MAG
 #: is the last party rather than one in the middle.
@@ -207,11 +215,14 @@ def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date, pse_for=None):
         tag["source"]["gca"] = control_area_for_market(buy_leg.pse) or ""
     if getattr(sell_leg, "is_market", False):
         tag["sink"]["lca"] = control_area_for_market(sell_leg.pse) or ""
-    for field, value in market_sink_fields(sell_leg).items():
-        if field == "label_point":
-            tag["label"] = f"{buy_leg.pse}-{sell_leg.pse}({value})"
-        else:
-            tag["sink"][field] = value
+
+    # Everything else a market end settles, from the same table for both
+    # ends - see MARKET_END_FIELDS.
+    for leg, half in ((buy_leg, "source"), (sell_leg, "sink")):
+        for field, value in market_end_fields(leg).items():
+            if field in tag[half]:
+                tag[half][field] = value
+    tag["label"] = default_label(buy_leg, sell_leg)
     return tag
 
 
@@ -271,27 +282,78 @@ MARKET_CONTROL_AREAS = {
 }
 
 
-#: What else a market end settles, beyond its control area.
+#: What each market settles about the end of a link that reaches it, beyond
+#: nothing: the desk's internal name for a market is not what any of the
+#: three cells wants.
 #:
-#: Only the sink half, and only SWPW, because that is the one the desk has
-#: a settled convention for and the only one it has confirmed: selling into
-#: SWPW is written with SPP in the Market cell — the pool it settles
-#: through, not the scheduling point — the Sink cell left empty, and the
-#: delivery point named in the header instead ("EPE-SWPW(CRSP)"). A key
-#: present here means that cell is settled by the market, *including* when
-#: it is settled to blank, which is why `point` is in the dict rather than
-#: simply absent from it.
-MARKET_SINK_FIELDS = {
-    "SWPW": {"market": "SPP", "point": "", "label_point": "CRSP"},
+#: Given by the desk, market by market, as (header, Market cell, control
+#: area). The header writes the market end as `NAME(node)` and the other end
+#: as itself, whichever way round the link runs — so a link into CAISO
+#: reads `EPE-CISO(node)` and one out of it `CISO(node)-EPE`:
+#:
+#:     market   header piece      Market cell   GCA/LCA
+#:     CAISO    CAISO(node)       CISO          CISO
+#:     AESO     AESO(tie)         AESO          AESO
+#:     SWPW     SWPW(node)        SPP           SWPW
+#:     SWPP     SWPP(node)        SPP           SWPP
+#:
+#: Two of the four write something in the Market cell that is neither the
+#: trading name nor the control area, and CAISO's header piece is its
+#: trading name while its Market cell is its control area — which is why
+#: this is a table of facts rather than a rule with exceptions.
+#:
+#: `node` is the scheduling point at that end and is **not** known when a
+#: link is drawn, so it opens as the same `??` the path string uses for a
+#: party nobody has named yet, except where the desk has given a default.
+#: A key present here settles that cell *including* when it settles it to
+#: blank, which is why every row's empty `point` is written out rather than
+#: left absent: a market end names its node in the header, and the sheet's
+#: own Source/Sink cell stays empty on that side whatever an old route
+#: might have put there.
+#:
+#: CEN is deliberately absent: its workbooks differ enough to need their own
+#: handling, and until that exists a CEN end is better left alone than
+#: filled in with another market's convention.
+MARKET_END_FIELDS = {
+    "CAISO": {"header": "CAISO", "node": PATH_UNKNOWN, "market": "CISO", "point": ""},
+    "AESO": {"header": "AESO", "node": PATH_UNKNOWN, "market": "AESO", "point": ""},
+    # CRSP is the default rather than a guess: it is the delivery point on
+    # 1,791 of the desk's own SWPP-into-SWPW segments in a year, against 720
+    # for WAUW and a handful for the other two.
+    "SWPW": {"header": "SWPW", "node": "CRSP", "market": "SPP", "point": ""},
+    "SWPP": {"header": "SWPP", "node": PATH_UNKNOWN, "market": "SPP", "point": ""},
 }
 
 
-def market_sink_fields(leg):
-    """What a link sinking into this market fills in by itself, or {} — for
-    a leg that isn't a market, or a market with no convention on file."""
+def market_end_fields(leg):
+    """What this market end fills in by itself, or {} — for a leg that
+    isn't a market, or a market with no convention on file (CEN).
+
+    The same table serves both ends: a market is a market whether the power
+    starts there or finishes there, and the desk gave both orderings.
+    """
     if not getattr(leg, "is_market", False):
         return {}
-    return MARKET_SINK_FIELDS.get((leg.pse or "").strip().upper(), {})
+    return MARKET_END_FIELDS.get((leg.pse or "").strip().upper(), {})
+
+
+def header_piece(leg, placeholder):
+    """How one end of a link is written in the sheet's header line: a
+    market as `SWPW(CRSP)`, anything else as SOURCE or SINK."""
+    fields = market_end_fields(leg)
+    if not fields:
+        return placeholder
+    return f"{fields['header']}({fields['node']})"
+
+
+def default_label(buy_leg, sell_leg):
+    """The sheet's header line: what the power comes off, what it goes
+    into. Two counterparties give `SOURCE-SINK`, which is where a tag
+    starts anyway (blank_tag)."""
+    return (
+        f"{header_piece(buy_leg, SOURCE_LABEL)}"
+        f"-{header_piece(sell_leg, SINK_LABEL)}"
+    )
 
 
 def control_area_for_market(market):
@@ -369,6 +431,31 @@ def carbon_copy_rows(tag):
     return clean_rows(tag.get("carbon_copy"), ("type", "market"))
 
 
+def split_difference(link_mw_by_hour, schedules):
+    """{HE: tagged MW - the link's MW} for every hour the two disagree on.
+
+    The invariant behind splitting one link across several tags: whatever
+    the trader does with the shares, the shares are still the link. An hour
+    missing from a schedule counts as zero on it, which is what lets a tag
+    cover only part of the day.
+
+    Arithmetic only: the sentence a trader reads is built in
+    ui.scheduling.tag.split_errors, which is the layer allowed to reach
+    for data.bilateral's HE-range formatter. This module stays
+    importable with nothing but the standard library.
+    """
+    hours = set(link_mw_by_hour or {}) | {h for s in schedules for h in (s or {})}
+    out = {}
+    for hour in sorted(int(h) for h in hours):
+        tagged = sum(float((s or {}).get(hour) or 0) for s in schedules)
+        linked = float((link_mw_by_hour or {}).get(hour) or 0)
+        # Rounded before the comparison: these are MW a trader typed, and
+        # a float's last bit is not a discrepancy anyone can act on.
+        if round(tagged - linked, 6):
+            out[hour] = tagged - linked
+    return out
+
+
 def tag_errors(tag):
     """Everything that stops this tag being written, in the order a trader
     would fix it. Empty means it can be generated.
@@ -381,7 +468,7 @@ def tag_errors(tag):
     """
     errors = []
     if not tag.get("mw_by_hour"):
-        errors.append("This link has no hours — there is nothing to tag.")
+        errors.append("This tag has no hours — there is nothing to tag.")
     if not tag["source"]["gca"].strip():
         errors.append("GCA is required.")
     if not tag["sink"]["lca"].strip():

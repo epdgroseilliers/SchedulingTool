@@ -76,7 +76,8 @@ against real broker text, and a wrong guess here writes a bad row into a
 back office database. Handles: which side MAG is on (explicit `MAG BUYS`, or
 the mirrored verb when only the counterparty is named), counterparty
 resolution through alias/exact/full-name/fuzzy matching, MW, shape/hour
-range, four price forms (`FIXED $N`, bare `$N`, `for <node>±N`, `@ index
+range (including `1x16`/`1x8`, below), location aliases (`COB` is the same
+point as `MALIN`, which the desk writes either way round), four price forms (`FIXED $N`, bare `$N`, `for <node>±N`, `@ index
 ±N` — which derives the node from the location), specified source
 (including `ACS` → the counterparty's Asset Controlling Supplier, and `SS`
 → whichever specified source that counterparty means by it, Seattle City
@@ -88,6 +89,23 @@ the word "date"), a range, or a bare weekday (`Mon only` → the nearest
 occurrence of that weekday **on or after the Trade Date**, not the real
 wall-clock date — a trader back-entering a past trade needs relative dates
 to resolve against the trade they're entering, not today).
+
+**1x16 and 1x8** are the desk's two single-day products: sixteen on-peak
+hours, and the eight off-peak ones (`HE 1-6` plus `23-24`). They look like
+HL and LL and deliberately aren't them — **HL and LL ask the WECC
+calendar what kind of day it is, these don't**. An HL leg flows no hours at
+all on an off-peak day and an LL leg flows all twenty-four, which is
+exactly wrong for a shape whose whole purpose is naming a block of hours on
+one named day, weekend days included: "1x16 on Saturday" is sixteen hours
+on Saturday, where "HL on Saturday" is nothing. The hours live in
+`domain.shapes.FIXED_SHAPE_HOURS` and are stored in the He column written
+out (`7-22`, `1-6,23-24`), never as "1x16" — an He of "HL" would claim the
+calendar had a say in it.
+
+A day named alongside one of them is taken at its word (`sat 1x16` → that
+Saturday, one day). It is **silence** that gets a soft warning, because the
+form's own default window is the whole trading session and these cover one
+day of it.
 
 A parse either fully succeeds (fills the whole form) or fully fails (fills
 nothing, shows the specific errors) — never partial. Fuzzy matches are
@@ -846,6 +864,54 @@ rule as every other history-based suggestion here: a choice, never a fill.
 Pressing one copies that route's GCA/LCA, source/sink points, market path
 and transmission rows onto the tag.
 
+### One link, several tags
+
+A schedule can run down more than one path, and a path is a tag. So the
+popup carries **tabs**: Tag 1 by default and nothing to see, "Split" to add
+another, up to six. Each tab is a whole tag of its own — its own hours, its
+own path string, its own lookup and its own fields. The link above them is
+unchanged: one line on the board, one schedule, one state.
+
+**The shares have to add up to the link, and the check says so when they
+don't.** It sits directly under the link's own total, because that is the
+number being divided, and it is written in the two directions separately
+because they are different mistakes: carrying *more* than the link tags MW
+the desk doesn't have, carrying *less* leaves some untagged. The arithmetic
+is `domain.tags.split_difference` (pure, per hour, tolerant of a float's
+last bit); the sentence is `ui.scheduling.tag.split_errors`, which lives a
+layer up because the HE-range formatter it wants is in `data`.
+
+Hours as well as MW: a tag for the morning and a tag for the afternoon adds
+up exactly as two half-MW tags do, since an hour missing from a share counts
+as zero on it.
+
+**A new tag starts empty.** Everything is still on the tags already there,
+so the split adds up at the moment it is made and the trader moves hours
+across rather than finding the link over-tagged on the way in. It is also
+why the first tag is special in one way only: it is keyed by the link
+itself, so it can't be removed and a link always has a tag. The extra ones
+are keyed off it — `L1`, `L1_t2`, `L1_t3` — which is what lets every
+existing caller go on treating `mv_tags[link_id]` as "the tag" and keeps a
+one-tag link filed exactly where it always was.
+
+While a link has one tag its hours **are** the link's and follow it; a
+second grid saying the same thing would only be a second grid to keep in
+step. The moment it is split, each tag owns its share.
+
+**One MW across the whole schedule in one entry.** Most tags carry the same
+MW every hour, and typing it into twenty-four cells is twenty-four chances
+to fat-finger one. Each tab has a box and a Fill beside its own total. The
+hours it fills are the **link's**, not all twenty-four: an hour the link
+doesn't run is an hour that tag can't have, and filling it would only hand
+the trader a check to clear.
+
+**Generate writes every tag in one press.** A link split across three paths
+is still one decision — the schedule is covered or it isn't — and a button
+per tab would be three chances to forget the third. One file per tag,
+reported a line each, blocked while any tag is incomplete or the shares
+don't add up. Their default names are numbered, because two tags of one
+link would otherwise be written to the same file.
+
 ### Which reservation numbers carry forward
 
 A reservation number belongs to a *day*, not to a route — 92% of the desk's
@@ -958,25 +1024,50 @@ sink points, contracts, transmission reservations, carbon copies.
 ### What a market end settles by itself
 
 A market end is not a guess. Buying from a market means MAG generates
-there, selling into one means MAG sinks there, and the control area follows
-without anyone typing it — the same fact the route lookup is already
-forbidden from contradicting. So a link into CAISO opens with LCA `CISO`
-(the one market whose control area isn't its own trading name), and one
-into SWPW with `SWPW`.
+there, selling into one means MAG sinks there, and three cells follow from
+that without anyone typing them. The desk gave them market by market, and
+none of the three is simply the market's own name:
 
-SWPW settles more than that, and the desk's convention is specific: the
-Market cell reads **SPP** — the pool it settles through, not the
-scheduling point — the **Sink cell is left empty**, and the delivery point
-is named in the **header** instead, `EPE-SWPW(CRSP)`. That is in
-`domain.tags.MARKET_SINK_FIELDS`, one entry per market with a convention on
-file, and a key present there means that cell is settled *including* when
-it is settled to blank. Which is also why an old route can't fill it: "Use
-this route" copies a historical sink point onto the tag, and here the
-market end is known while the route is only a guess, so the known one wins.
+| market | header piece | Market cell | GCA/LCA |
+|---|---|---|---|
+| CAISO | `CAISO(node)` | CISO | CISO |
+| AESO | `AESO(tie)` | AESO | AESO |
+| SWPW | `SWPW(node)` | SPP | SWPW |
+| SWPP | `SWPP(node)` | SPP | SWPP |
 
-Only SWPW so far, and only the sink half — the one the desk has confirmed.
-A market with nothing on file keeps its own name in the Market cell and its
-header untouched.
+CAISO's header piece is its trading name while its Market cell is its
+control area; SWPW's header piece is its trading name while its Market cell
+is the pool it settles through. There is no rule underneath that, which is
+why `domain.tags.MARKET_END_FIELDS` is a table of facts rather than a rule
+with exceptions — and why the next market the desk specifies is a row
+rather than a patch.
+
+**The other end of the header is the side, not the party.** A market end is
+written `NAME(node)`; a counterparty end is written `SOURCE` or `SINK`
+depending on which half of the deal it is. So a link into CAISO reads
+`SOURCE-CAISO(node)` and one out of it `CAISO(node)-SINK`, and a link
+between two counterparties reads `SOURCE-SINK`, which is where a tag starts
+anyway. The counterparty's own name is already in the Market cell and in
+the market path; the header line is about the shape of the deal.
+
+**The node is not known when a link is drawn**, so it opens as the same
+`??` the path string uses for a party nobody has named yet — except SWPW,
+where CRSP is the default because it is the delivery point on 1,791 of the
+desk's own SWPP-into-SWPW segments in a year against 720 for WAUW.
+
+**No market end fills the sheet's Source/Sink cell.** That end names its
+node in the header instead, so the cell stays empty on that side. A key
+present in the table settles a cell *including* when it settles it to
+blank, which is why every row's empty `point` is written out rather than
+left absent. It is also what stops an old route filling it: "Use this
+route" copies a historical point onto the tag, and here the market end is
+known while the route is only a guess.
+
+**CEN is deliberately absent.** Its workbooks differ enough to need their
+own handling, and until that exists a CEN end is better left alone than
+filled in with another market's convention. Its control area still follows,
+since that is a fact about the link rather than a convention about its
+workbook.
 
 ### PSE codes are never typed
 
@@ -1040,6 +1131,36 @@ Three things it deliberately does not do:
 - **Treat "not found" as a problem.** The summary holds *MAG's* reservations;
   a segment wheeled on a counterparty's is genuinely absent, which is the
   case for about three references in ten. It says so and leaves the path.
+
+#### A data editor's height is part of its name
+
+The bug that outlived three attempts to find it, written down so the next
+person doesn't have to. Symptom: delete a row from the market path or the
+transmission block and it stays deleted — until you touch any other field,
+at which point it comes back, along with every other edit made since.
+
+An editor is sized to the rows it holds (`table_height`, so none of them
+ever scrolls), and **`height` is one of the properties Streamlit hashes
+into a data editor's element id**, alongside the data itself. So the run
+after a deletion hands the widget a different id, looks the trader's diff
+up under a name that holds nothing, and returns the seed untouched — then
+writes its own empty diff over the real one. Traced in Chrome against the
+live app, deleting the middle row of a three-row market path:
+
+    run 1  in=3  state={deleted_rows: [1]}  out=2    the deletion
+    run 2  in=2  state={deleted_rows: [1]}  out=3    and back again
+
+The fix is to keep the seed and the identity in step: when the row count
+moves, the seed is rebuilt from the tag and the widget renamed on purpose
+(`seed_is_stale`). That makes the rename lossless, because the tag already
+holds the edit — every run reads the editor's output straight into it.
+Typing *within* a row changes no count, so the seed still doesn't move
+under a trader mid-edit, which is the other bug this file is about.
+
+Worth knowing for the next one: **AppTest cannot see any of this.** It
+carries no data editor state between runs, so the editor is remounted every
+run there and a page-level test passes with the fix in or out. The rule is
+unit-tested; the behaviour is checked in a browser.
 
 The fill happens in Python, so the editor is given a **fresh widget** for it
 (`_bump`) rather than being re-seeded: a data editor folds its own diff over

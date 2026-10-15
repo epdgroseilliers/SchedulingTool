@@ -22,8 +22,12 @@ domain/       Pure business logic — no Streamlit import anywhere in this
   grid.py       The HE x Date grid: building it, converting between its
                 wide (data_editor) and long (date, he, mw) shapes, and
                 reading a column of MW pasted out of Excel.
-  shapes.py     Shape parsing (HL/LL/ATC/custom range) and expanding a
-                shape into actual per-date hours via the WECC calendar.
+  shapes.py     Shape parsing (HL/LL/ATC/1x16/1x8/custom range) and
+                expanding a shape into actual per-date hours via the WECC
+                calendar — except 1x16 and 1x8, the desk's two single-day
+                products, which name their hours outright and ask the
+                calendar nothing, which is the whole reason it writes them
+                (FIXED_SHAPE_HOURS).
   trade.py      Trade-level rules: price formatting, the DAM/RT date
                 default, and the validation/warnings the legacy macro ran
                 before writing to the DB.
@@ -37,9 +41,11 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 fields, the PSE chain a link implies (generator, MAG,
                 load), that same chain written as the opening path string
                 for the scheduler chat (??-ABEX-MAG001-BPAT-??), the
-                control area a market end implies — and, for the one
-                market with a convention on file, the Market cell, header
-                and Sink cell that end settles too — whether an OASIS
+                whether a link's tags still add up to its own schedule,
+                what each market settles about the end of a link reaching
+                it (MARKET_END_FIELDS: the header piece, the Market cell and
+                the control area, one row per market and none of them the
+                market's own name) — whether an OASIS
                 reservation still covers a flow date, who still has to tag
                 a link (TAG_STATES, which the board colours by), what must
                 be filled in before one can be written, and how the desk
@@ -94,7 +100,11 @@ ui/           Streamlit rendering, one module per page section. Each
                  the first.
     state.py       Its session state (links, hidden squares and tags are
                    session-only) and assembling a flow date's legs from the
-                   DB + this session's trades. Also propagate_link, which
+                   DB + this session's trades. A link may carry more than
+                   one tag — one per path its schedule is split down —
+                   keyed off its own id (tag_keys_for, add_tag), so the
+                   first one is filed under the link itself and everything
+                   that knows about one tag still finds it. Also propagate_link, which
                    gives every other day the two trades share its own
                    independent link.
     filters.py     Flow date, source/PSE/POR-POD, Refresh, Restore hidden.
@@ -105,9 +115,12 @@ ui/           Streamlit rendering, one module per page section. Each
                    carries it too, or a link just marked tagged would keep
                    its old colour until something else moved.
     links.py       The schedule popup (create and edit are one modal) and
-                   the detail strip under the board. Who/where, the hours
-                   and the path string full width; under them the route
-                   lookup and the tag fields side by side, the latter behind
+                   the detail strip under the board. Who/where and the
+                   link's own hours at the top, then one tab per tag it is
+                   split into (the strip appears only once there is more
+                   than one), each holding that tag's hours, its path string
+                   full width, and under them the route lookup and the tag
+                   fields side by side, the latter behind
                    an expander — open on a link clicked, shut on one being
                    drawn; Generate in the action row at the foot. Widens
                    the modal past st.dialog's own sizes the way bidgrid.py

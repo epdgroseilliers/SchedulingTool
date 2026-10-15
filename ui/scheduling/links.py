@@ -11,10 +11,13 @@ separate surface for each would be four things to learn.
 
 import streamlit as st
 
+from data.bilateral import hours_to_he_string
 from domain.matching import links_for, open_by_hour, suggest_allocation
 from ui.scheduling.state import (
     LINK_DIALOG,
     PENDING_TAG,
+    add_tag,
+    arm_dialog,
     close_popup,
     dialog_was_dismissed,
     commit_link,
@@ -24,6 +27,9 @@ from ui.scheduling.state import (
     leg_or_market,
     legs_by_key,
     remove_link,
+    remove_tag,
+    tag_for,
+    tag_keys_for,
     update_link,
 )
 from ui.scheduling.tag import (
@@ -33,6 +39,7 @@ from ui.scheduling.tag import (
     render_tag,
     render_tag_lookup,
     render_tag_state,
+    split_errors,
 )
 from ui.scheduling.widgets import hours_editor as _hours_editor
 
@@ -127,6 +134,108 @@ def _open_note(leg, links):
     return f"{leg.pse} {sum(open_by_hour(leg, links).values()):,.0f} MWh open"
 
 
+#: How many tags one link may be split into. Not a technical limit: a
+#: schedule split five ways is five paths to keep straight in one popup, and
+#: a trader who needs more has a different problem from the one this solves.
+MAX_TAGS = 6
+
+
+def _tag_hours(container, tag_key, tag, flow_date):
+    """One split tag's own share of the hours.
+
+    Seeded once and then left alone, like every other editor in this popup:
+    the grid's own data is part of the widget's identity, so re-seeding it
+    from what the trader is typing renames the widget and drops the next
+    edit (see ui.scheduling.tag._table, which is the same trap). The seed
+    is `mv_tag_`-prefixed so it is swept with the rest when a popup opens,
+    and rebuilt from the tag, which is what actually holds the hours.
+    """
+    seed_key = f"mv_tag_{tag_key}_hours_seed"
+    if seed_key not in st.session_state:
+        st.session_state[seed_key] = dict(tag.get("mw_by_hour") or {})
+    with container:
+        return _hours_editor(
+            st.session_state[seed_key], flow_date, key=_hours_key(tag_key)
+        )
+
+
+def _hours_key(tag_key):
+    """This tag's hour grid, under a name that changes when the fill box
+    rewrites it DASH a renamed widget is the only thing that makes a grid show
+    what Python just put in it (see ui.scheduling.tag._bump, same trap)."""
+    version = st.session_state.get(f"mv_tag_{tag_key}_hours_ver", 0)
+    return f"mv_tag_{tag_key}_hours" + (f"_v{version}" if version else "")
+
+
+def _quick_fill(container, tag_key, tag, link_mw_by_hour):
+    """One MW across every hour the link runs.
+
+    Most tags carry the same MW all day, and typing it into twenty-four
+    cells is twenty-four chances to fat-finger one. The hours it fills are
+    the **link's**, not all twenty-four: an hour the link doesn't run is an
+    hour this tag can't have, and filling it would only hand the trader a
+    check to clear.
+    """
+    hours = [h for h, mw in (link_mw_by_hour or {}).items() if mw]
+    box, go = container.columns([1, 1], vertical_alignment="bottom")
+    mw = box.number_input(
+        "MW every hour",
+        min_value=0.0,
+        value=None,
+        step=1.0,
+        placeholder="MW",
+        label_visibility="collapsed",
+        key=f"mv_tag_{tag_key}_fill",
+    )
+    if go.button(
+        "Fill",
+        width="stretch",
+        disabled=mw is None or not hours,
+        help=f"Put this MW on every hour the link runs (HE "
+             f"{hours_to_he_string(hours)})" if hours else "This link has no hours",
+        key=f"mv_tag_{tag_key}_fill_go",
+    ):
+        if mw is None or not hours:
+            return          # the button is disabled for both; belt and braces
+        filled = {int(h): float(mw) for h in hours}
+        tag["mw_by_hour"] = filled
+        st.session_state[f"mv_tag_{tag_key}_hours_seed"] = filled
+        key = f"mv_tag_{tag_key}_hours_ver"
+        st.session_state[key] = st.session_state.get(key, 0) + 1
+        arm_dialog(LINK_DIALOG)
+        st.rerun()
+
+
+def _render_tag_pane(container, tag_key, buy, sell, hours, flow_date, editing):
+    """One tag, whole: the path string in the open, the route lookup beside
+    the fields behind their expander.
+
+    The same three surfaces whether the link carries one tag or five - the
+    only thing a split changes is which hours they are about, and that is
+    settled before this is called.
+    """
+    render_path_string(container, tag_key, buy, sell, hours, flow_date)
+
+    # Side by side below the full-width half, because both are tall and
+    # stacking them is what made the popup scroll: together they cost
+    # the height of the taller one rather than the sum of the two.
+    #
+    # container.columns rather than `with container:` — the single-tag case
+    # hands this the page itself, and the st module is not a context
+    # manager even though every container it hands out is.
+    lookup_col, tag_col = container.columns(POPUP_SPLIT)
+    render_tag_lookup(lookup_col, tag_key, buy, sell, hours, flow_date)
+
+    # Open on a link being revisited, shut on one being drawn - unless
+    # "Use this route" just filled it, in which case it's worth seeing
+    # right away. Drawing a link is about the hours, the path string and
+    # perhaps a lookup; the tag fields are the next sitting.
+    with tag_col.expander(
+        "Tag details", expanded=bool(editing) or recipe_was_applied(tag_key)
+    ):
+        render_tag(st.container(), tag_key, buy, sell, hours, flow_date)
+
+
 def render_popup(legs, links, flow_date):
     """Show the schedule modal if one is open. Everything it does ends in a
     rerun, which is also what dismisses it."""
@@ -212,33 +321,79 @@ def render_popup(legs, links, flow_date):
             for note in (_open_note(buy, without_this), _open_note(sell, without_this))
             if note
         ]
-        st.caption(
+        totals, split = st.columns([5, 1], vertical_alignment="center")
+        totals.caption(
             " · ".join(
                 [f"{sum(allocation.values()):,.0f} MWh on this link"] + open_notes
             )
         )
+        # Next to the link's own total, because that is what a split has to
+        # keep adding up to.
+        if len(tag_keys_for(tag_key) or [tag_key]) < MAX_TAGS and split.button(
+            "Split", width="stretch", help="Tag part of this schedule on another path"
+        ):
+            add_tag(tag_key, buy, sell, flow_date)
+            arm_dialog(LINK_DIALOG)
+            st.rerun()
+
+        # Under the line that says what the link carries, because that is
+        # the number the tags have to add up to. Written into further down,
+        # once the tabs have reported their shares.
+        check = st.empty()
 
         st.divider()
-        render_path_string(st, tag_key, buy, sell, allocation, flow_date)
 
-        # Side by side below the full-width half, because both are tall and
-        # stacking them is what made the popup scroll: together they cost
-        # the height of the taller one rather than the sum of the two.
-        lookup_col, tag_col = st.columns(POPUP_SPLIT)
-        render_tag_lookup(lookup_col, tag_key, buy, sell, allocation, flow_date)
+        # One tag, or several: a schedule can be split across paths, and
+        # each path is its own tag with its own hours, its own string and
+        # its own fields. The tab strip only appears once there is more
+        # than one - a lone tab is a label for a choice nobody made.
+        keys = tag_keys_for(tag_key) or [tag_key]
+        if len(keys) == 1:
+            # Its hours *are* the link's, and follow it: there is nothing to
+            # share them with, so a second grid saying the same thing would
+            # only be a second grid to keep in step.
+            _render_tag_pane(st, keys[0], buy, sell, allocation, flow_date, editing)
+            shares = [allocation]
+        else:
+            shares = []
+            labels = [f"Tag {n}" for n, _ in enumerate(keys, 1)]
+            for pane, key in zip(st.tabs(labels), keys):
+                tag = tag_for(key)
+                hours = _tag_hours(pane, key, tag, flow_date)
+                tag["mw_by_hour"] = {int(h): float(mw) for h, mw in hours.items()}
+                shares.append(hours)
 
-        # Open on a link being revisited, shut on one being drawn — unless
-        # "Use this route" just filled it, in which case it's worth seeing
-        # right away. Drawing a link is about the hours, the path string and
-        # perhaps a lookup; the tag fields are the next sitting.
-        with tag_col.expander(
-            "Tag details", expanded=bool(editing) or recipe_was_applied(tag_key)
-        ):
-            render_tag(st.container(), tag_key, buy, sell, allocation, flow_date)
+                # The same shape as the link's own total above it, so the
+                # two read as the same kind of line: what this one carries,
+                # what you can put on it in one go, and the one thing you
+                # can do to it.
+                carried, fill, drop = pane.columns(
+                    [4, 2, 1], vertical_alignment="center"
+                )
+                carried.caption(f"{sum(hours.values()):,.0f} MWh on this tag")
+                _quick_fill(fill, key, tag, allocation)
+                if key != keys[0] and drop.button(
+                    "Remove",
+                    width="stretch",
+                    help="Drop this tag. Its hours go back to being untagged.",
+                    key=f"mv_tag_{key}_remove",
+                ):
+                    remove_tag(key)
+                    arm_dialog(LINK_DIALOG)
+                    st.rerun()
+                _render_tag_pane(pane, key, buy, sell, hours, flow_date, editing)
+
+        # Drawn into the slot left above, next to the schedule it is about:
+        # the tabs have to report their shares before it can be worked out,
+        # and by then the top of the popup is long since written.
+        mismatch = split_errors(allocation, shares)
+        if mismatch:
+            check.error("\n".join(f"- {line}" for line in mismatch))
+
         st.divider()
 
         cols = st.columns([1, 1, 1, 4], vertical_alignment="center")
-        render_generate(cols[3], tag_key)
+        render_generate(cols[3], tag_key, blocked=bool(mismatch))
         if cols[0].button(
             "Save" if editing else "Create link", type="primary", width="stretch"
         ):

@@ -49,6 +49,13 @@ COUNTERPARTY_ALIASES = {
     "TEPC": "TEPM"
 }
 
+#: The desk's two single-day products, written "1x16" and "1x8" (spaces
+#: around the x are tolerated). Sixteen on-peak hours and the eight
+#: off-peak ones, on one named day whatever kind of day it is — the hours
+#: themselves live in domain.shapes.FIXED_SHAPE_HOURS, which is where they
+#: are turned into a schedule. This module names only what to look for.
+_SINGLE_DAY_SHAPE_PATTERN = r"\b1\s*x\s*(16|8)\b"
+
 LOCATION_ALIASES = {
     "PV": "PALOVERDE500",
     "PALOVERDE": "PALOVERDE500",
@@ -64,6 +71,9 @@ LOCATION_ALIASES = {
     "FC": "FOURCORNE345",
     "FC345": "FOURCORNE345",
     "MALIN": "MALIN500",
+    # The California-Oregon Border, which the desk trades as the same
+    # point as Malin and writes either way round in a broker string.
+    "COB": "MALIN500",
     "NAVAJO": "NAVAJO500",
     "WESTWING": "WESTWING500",
     "MATL": "MATL.NWMT",
@@ -656,23 +666,46 @@ def parse_trade_string(
     else:
         result.errors.append("No MW quantity found (expected something like '100MW').")
 
-    # The "-end" half is optional so a single hour ("HE18") is read as a
-    # one-hour shape, same as typing "18" alone into the Shape box does.
-    m = scanner.take(
-        r"\bh(?:e)?\s*(\d{1,2})(?:\s*-\s*(?:h(?:e)?\s*)?(\d{1,2}))?\b"
-    )
+    # The desk's two single-day products, tried first because they are the
+    # most specific thing in the sentence. They are not HL and LL: those
+    # ask the WECC calendar what kind of day it is, and these name their
+    # hours outright, weekend days included (domain.shapes).
+    m = scanner.take(_SINGLE_DAY_SHAPE_PATTERN)
     if m:
-        start_he, end_he = m.group(1), m.group(2)
-        shape_str = f"{int(start_he)}-{int(end_he)}" if end_he else str(int(start_he))
-        result.fields["shape"] = ParsedField(shape_str, m.group(0).strip())
-    else:
-        m = scanner.take(r"\b(hl|ll|atc)\b")
-        if m:
-            result.fields["shape"] = ParsedField(m.group(1).upper(), m.group(0).strip())
-        else:
-            result.errors.append(
-                "No shape found (expected HL, LL, ATC, or an hour range like HE18-HE21)."
+        result.fields["shape"] = ParsedField(f"1x{m.group(1)}", m.group(0).strip())
+        if not result.get("start_date"):
+            # A day named in the string is taken at its word; it is only
+            # silence that needs flagging, because the form's own default
+            # window is the whole trading session and these cover one day
+            # of it.
+            result.warnings.append(
+                f"{m.group(0).strip()} covers a single day and the string "
+                "doesn't say which. The flow dates are left at their "
+                f"default — set them before adding the trade."
             )
+    else:
+        # The "-end" half is optional so a single hour ("HE18") is read as
+        # a one-hour shape, same as typing "18" alone into the Shape box.
+        m = scanner.take(
+            r"\bh(?:e)?\s*(\d{1,2})(?:\s*-\s*(?:h(?:e)?\s*)?(\d{1,2}))?\b"
+        )
+        if m:
+            start_he, end_he = m.group(1), m.group(2)
+            shape_str = (
+                f"{int(start_he)}-{int(end_he)}" if end_he else str(int(start_he))
+            )
+            result.fields["shape"] = ParsedField(shape_str, m.group(0).strip())
+        else:
+            m = scanner.take(r"\b(hl|ll|atc)\b")
+            if m:
+                result.fields["shape"] = ParsedField(
+                    m.group(1).upper(), m.group(0).strip()
+                )
+            else:
+                result.errors.append(
+                    "No shape found (expected HL, LL, ATC, 1x16, 1x8, or an "
+                    "hour range like HE18-HE21)."
+                )
 
     if scanner.take(r"\bnws\b"):
         result.fields["is_nws"] = ParsedField(True, "nws")
