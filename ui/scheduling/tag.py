@@ -96,11 +96,19 @@ HEADER_HEIGHT = 38
 #: doesn't crowd out the ones it still runs.
 HISTORY_WINDOW_DAYS = 365
 
-#: How many historical routes "Lookup old tags" shows. Every one is a button
-#: a trader has to read before pressing, so more than a handful defeats the
-#: point of a shortlist — and each one is four lines, so the list is what
-#: decides whether the popup fits on a screen.
+#: How many historical routes "Lookup old tags" shows at once. Every one is
+#: a button a trader has to read before pressing, so more than a handful
+#: defeats the point of a shortlist — and each one is four lines, so the
+#: page size is what decides whether the popup fits on a screen.
 LOOKUP_LIMIT = 4
+
+#: How many it ranks behind that page, for "Next 4". Ranking is free —
+#: every recipe is scored either way and `limit` only truncates the sorted
+#: list — so the deeper pages cost nothing until they are asked for, and
+#: asking for one re-reads nothing. The lookup itself stays as fast as it
+#: was: what it costs is the OATI read and the grouping, both of which
+#: happen once however many pages are kept.
+LOOKUP_DEPTH = 20
 
 
 def _key(link_id, name):
@@ -323,50 +331,64 @@ def render_generate(container, tag_key, blocked=False):
     column is what decides whether the popup fits on a screen: a block that
     reads just as well in a row that was half empty costs nothing there.
 
-    **Every tag the link carries, in one press.** A link split across
-    several paths is still one decision - the schedule is covered or it
-    isn't - and pressing Generate once per tab would be three chances to
-    forget the third. One file per tag, reported one line each.
+    **One file, holding the tags marked ready.** A link split across
+    several paths is finished a path at a time, so the trader says which
+    of them are done and those go out together — which is how the desk's
+    own split files read, several tags side by side in one workbook
+    (data.tagfiles.bilateral). Marking one ready and generating is how a
+    single tag of a split goes out on its own.
 
-    Where the files go is on the button's tooltip. What *stops* them being
-    written stays where it can be fixed: each tag's own errors in its
-    fields (render_tag), and a split that doesn't add up under the link's
-    own schedule (`blocked`).
+    Where the file goes is on the button's tooltip. What *stops* it being
+    written stays where it can be fixed: each ready tag's own errors in
+    its fields (render_tag), and a split that doesn't add up under the
+    link's own schedule (`blocked`). A tag nobody marked ready is not
+    checked at all — it isn't in the file.
     """
     tags = [tag_for(key) for key in tag_keys_for(tag_key)]
-    tags = [tag for tag in tags if tag is not None]
-    if not tags:
-        return
+    tags = [tag for tag in tags if tag is not None and tag.get("ready", True)]
     link_id = tag_key
-    paths = [tagfile.target_path(tag) for tag in tags]
-    where = "Writes " + ", ".join(p.name for p in paths) + f" to {paths[0].parent}"
-    if tagfile.TEST_MODE:
-        where += "  ·  test folder, not the day's own"
 
     left, right = container.columns([1, 1], vertical_alignment="center")
     overwrite = left.checkbox(
         "Overwrite if it exists", key=_key(link_id, "overwrite")
     )
+    if not tags:
+        right.button(
+            "Generate tag file",
+            type="primary",
+            width="stretch",
+            disabled=True,
+            help="No tag of this link is marked ready.",
+            key=_key(link_id, "generate"),
+        )
+        return
+
+    path = tagfile.target_path(tags)
+    where = f"Writes {path.name} to {path.parent}"
+    if len(tags) > 1:
+        where += f"  ·  {len(tags)} tags in the one file"
+    if tagfile.TEST_MODE:
+        where += "  ·  test folder, not the day's own"
+
     if right.button(
-        f"Generate tag file{'s' if len(tags) > 1 else ''}",
+        "Generate tag file",
         type="primary",
         width="stretch",
         disabled=blocked or any(tag_errors(tag) for tag in tags),
         help=where,
         key=_key(link_id, "generate"),
     ):
-        for tag, path in zip(tags, paths):
-            try:
-                written = tagfile.write_tag_file(tag, overwrite=overwrite)
-            except FileExistsError:
-                container.error(
-                    f"{path.name} already exists. Give this tag another name, "
-                    "or tick Overwrite."
-                )
-            except Exception as e:
-                container.error(f"Could not write {path.name}: {e}")
-            else:
-                container.success(f"Tag written to {written}")
+        try:
+            written = tagfile.write_tag_file(tags, overwrite=overwrite)
+        except FileExistsError:
+            container.error(
+                f"{path.name} already exists. Give this tag another name, "
+                "or tick Overwrite."
+            )
+        except Exception as e:
+            container.error(f"Could not write {path.name}: {e}")
+        else:
+            container.success(f"Tag written to {written}")
 
 
 def _fill_paths_from_oasis(tag, link_id):
@@ -575,10 +597,15 @@ def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_d
 
 def _apply_recipe(tag, link_id, match, buy_leg=None, sell_leg=None):
     """Copy one historical route onto this tag: its control areas, its
-    source/sink points, its market path and its transmission reservation
-    numbers — which is already enough for the OASIS lookup further down
-    render_tag to fill their paths on its own next pass (see
-    _fill_paths_from_oasis).
+    source/sink points and its market path.
+
+    **Not its transmission rows.** A reservation number belongs to a day,
+    not to a route — 92% of the desk's own references appear on exactly
+    one — so last month's numbers are dead on arrival, and the rows they
+    came on were being deleted more often than kept. The reservation is
+    typed, and its path then fills itself from OASIS
+    (_fill_paths_from_oasis), which is the one direction that doesn't put
+    anything on screen nobody asked for.
 
     Deliberately not touched: the tag's name and header, its carbon copy
     (OATI carries none), and source/sink contract — nothing in the corpus
@@ -630,71 +657,7 @@ def _apply_recipe(tag, link_id, match, buy_leg=None, sell_leg=None):
         }
         for row in sample["market_path"]
     ]
-    tag["transmissions"], note = _carry_reservations(sample, tag.get("flow_date"))
     _bump(link_id, "market_path")
-    _bump(link_id, "transmissions")
-    return note
-
-
-def _carry_reservations(sample, flow_date):
-    """The transmission rows a historical route contributes to this tag,
-    and one line on what it deliberately left blank.
-
-    A reservation number belongs to a *day*, not to a route: 92% of the
-    desk's own references appear on exactly one. So a number is only
-    carried forward when it is still good — which splits three ways:
-
-    - **Not a reference at all** (`EPE5PVPV`, a bare contract number):
-      carried as-is. These aren't dated, so there is nothing to expire.
-    - **A reference OASIS still covers on the flow date**: carried, and the
-      lookup in render_tag fills its path from it on this same run.
-    - **Anything else** — expired, or a counterparty's and so unverifiable:
-      nothing is carried at all, not even the row. An empty cell is
-      something a scheduler notices; a stale number is something they have
-      to catch.
-
-    **A path is never carried, only ever looked up.** The Path column is
-    filled from one place, OASIS, keyed on the number beside it
-    (_fill_paths_from_oasis) — so a path on screen always has a reference
-    standing behind it that a scheduler can check. Copying one off an old
-    route would break that: it would read exactly like a path this day's
-    reservation justifies, with nothing behind it. The reverse is fine and
-    expected — a reference OASIS can't answer for sits there with its path
-    blank.
-    """
-    rows, dropped, unknown = [], 0, 0
-    for segment in sample["physical_path"]:
-        if segment["type"] != TRANSMISSION:
-            continue
-        for res in segment["reservations"]:
-            number = (res.get("contract") or "").strip()
-            if not number:
-                continue
-            if not lookupable_aref(number):
-                rows.append({"path": "", "reservation": number, "mw": ""})
-                continue
-            found = reservation(number)
-            if found is None:
-                unknown += 1
-            elif reservation_covers(found, flow_date):
-                rows.append({"path": "", "reservation": number, "mw": ""})
-            else:
-                dropped += 1
-    return rows, _carried_note(len(rows), dropped, unknown, flow_date)
-
-
-def _carried_note(kept, dropped, unknown, flow_date):
-    parts = [f"{kept} transmission row{'' if kept == 1 else 's'} from that route"]
-    if dropped:
-        parts.append(
-            f"{dropped} reservation{'' if dropped == 1 else 's'} not carried — "
-            f"not good for {flow_date}"
-        )
-    if unknown:
-        parts.append(
-            f"{unknown} not carried — not ours to check"
-        )
-    return " · ".join(parts)
 
 
 def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
@@ -725,11 +688,11 @@ def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_da
             [] if error else rank_recipes(
                 group_by_recipe(records),
                 tag_query(tag, buy_leg, sell_leg),
-                limit=LOOKUP_LIMIT,
+                limit=LOOKUP_DEPTH,
             )
         )
         st.session_state[_key(link_id, "lookup_done")] = True
-        st.session_state[_key(link_id, "lookup_note")] = None
+        st.session_state[_key(link_id, "lookup_page")] = 0
 
     if not st.session_state.get(_key(link_id, "lookup_done")):
         return
@@ -746,7 +709,16 @@ def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_da
         )
         return
 
-    for match in matches:
+    # A page at a time. The ranking is a guess, and a guess that puts the
+    # right route fifth is no use if fifth can't be reached DASH which is
+    # what this is for, not for browsing.
+    page = st.session_state.get(_key(link_id, "lookup_page"), 0)
+    shown = matches[page * LOOKUP_LIMIT:(page + 1) * LOOKUP_LIMIT]
+    if not shown:                       # a page that emptied under us
+        page, shown = 0, matches[:LOOKUP_LIMIT]
+        st.session_state[_key(link_id, "lookup_page")] = 0
+
+    for match in shown:
         # Keyed so the popup's CSS can find it: Streamlit turns a
         # container key into an `st-key-...` class, and the bordered box's
         # own class is a generated one that changes between releases.
@@ -756,14 +728,37 @@ def render_tag_lookup(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_da
             if cols[1].button(
                 "Use this route", key=_key(link_id, f"use_{match['recipe_id']}")
             ):
-                st.session_state[_key(link_id, "lookup_note")] = _apply_recipe(
-                    tag, link_id, match, buy_leg, sell_leg
-                )
+                _apply_recipe(tag, link_id, match, buy_leg, sell_leg)
                 st.session_state[_key(link_id, "expander_open")] = True
 
-    note = st.session_state.get(_key(link_id, "lookup_note"))
-    if note:
-        container.caption(note)
+    _render_pager(container, link_id, page, len(matches))
+
+
+def _render_pager(container, link_id, page, total):
+    """Back and Next under the shortlist, and which four of how many these
+    are. Only drawn when there is somewhere to go."""
+    last = (total - 1) // LOOKUP_LIMIT
+    if last < 1:
+        return
+    back, forward, where = container.columns([1, 1, 2], vertical_alignment="center")
+    if back.button(
+        "Back", width="stretch", disabled=page == 0, key=_key(link_id, "page_back")
+    ):
+        st.session_state[_key(link_id, "lookup_page")] = page - 1
+        arm_dialog(LINK_DIALOG)
+        st.rerun()
+    if forward.button(
+        "Next 4",
+        width="stretch",
+        disabled=page >= last,
+        key=_key(link_id, "page_next"),
+    ):
+        st.session_state[_key(link_id, "lookup_page")] = page + 1
+        arm_dialog(LINK_DIALOG)
+        st.rerun()
+    first = page * LOOKUP_LIMIT + 1
+    where.caption(f"{first}-{min(first + LOOKUP_LIMIT - 1, total)} of {total}")
+
 
 
 def _render_match(container, match):
@@ -906,7 +901,10 @@ def render_tag(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_date):
         st.rerun()
     _render_oasis_note(trans_col, resolved, unknown)
 
-    errors = tag_errors(tag)
+    # Nothing at all on a tag nobody has marked ready: it is a path still
+    # being thought about, and listing what it lacks is noise about a tag
+    # that isn't going anywhere yet (see render_generate).
+    errors = tag_errors(tag) if tag.get("ready", True) else []
     if errors:
         # One box rather than one per message, as in the bid-file builder:
         # most of these are "not filled in yet" on a tag just opened. Here,

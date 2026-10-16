@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-1,042 tests total: all but 26 run with no network dependency beyond what
+1,076 tests total: all but 26 run with no network dependency beyond what
 rendering the app already needs (see below); those 26 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them, and a couple skip on a weekday whose WECC trading
@@ -118,7 +118,10 @@ tests/
                              save goes to tmp_path via monkeypatch; never Z:\
     test_tagfile.py         the bilateral tag writer: every cell reference
                              read off the desk's own files, the EPT hour
-                             shift, which day folder a tag lands in, and
+                             shift, several tags written side by side as
+                             three-column groups (headers, merges and
+                             widths copied off the first), which session
+                             folder a tag lands in, and
                              that the template is never written to. Every
                              save goes to tmp_path; never Y:\West
   ui/                       exercised through streamlit.testing.v1.AppTest —
@@ -183,8 +186,10 @@ tests/
                               string and fields, the check that says when
                               the shares stop adding up to the link, and
                               Generate writing one file per tag in one
-                              press, and the quick-fill box that puts one MW
-                              on every hour the link runs; what sinking into SWPW fills in by
+                              press, the Ready tick that says which tags go
+                              in it, and the quick-fill box that puts one MW
+                              on every hour the link runs; paging the route
+                              shortlist four at a time; what sinking into SWPW fills in by
                               itself and what it keeps an old route from
                               filling; and that a Path cell emptied by hand
                               stays empty (stubbed
@@ -316,6 +321,16 @@ rebalancing a typed MW causes is the clearest case: it lives in
 Both `_checks.js` files print `PASS`/`FAIL` per check and end with
 `ALL CHECKS PASSED`; the pytest wrappers assert on that *and* on a minimum
 number of PASS lines, so a harness that silently stops early still fails.
+
+## Safety: nothing here writes to the desk's tag share
+
+`data.tagfiles.bilateral.TEST_MODE` is off now that tags go to the
+session's real folder, and that flag was what used to keep the suite's
+generated files in one harmless place. So `tests/conftest.py` carries an
+**autouse** fixture, `never_the_real_tag_folder`, pointing the writer's
+`TAG_FOLDER` at a temp directory for every test in the suite. Tests that
+assert *where* a tag landed still take their own `redirect_tags`; the
+autouse one is the net under the tests that don't.
 
 ## Safety: nothing here writes to the compliance database
 

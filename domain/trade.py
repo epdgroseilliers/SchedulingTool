@@ -99,6 +99,24 @@ def session_horizon(trade_date, sessions):
     return max(sessions[max(earlier)])
 
 
+def session_days(flow_date, sessions):
+    """Every flow date traded in the same session as this one, sorted.
+
+    The desk files its tags one folder per *session* rather than per day
+    — a Friday/Saturday pair traded together on Thursday goes in one
+    "16-17 Oct" folder — so the folder a tag belongs in is a question
+    about the session, not about the tag.
+
+    Answers with the day alone when the calendar says nothing about it,
+    which is the same stance the rest of this module takes: a DB hiccup
+    shouldn't quietly file a tag somewhere new.
+    """
+    for flows in (sessions or {}).values():
+        if flow_date in flows:
+            return sorted(flows)
+    return [flow_date]
+
+
 def has_trading_session(trade_date, sessions):
     """Whether the WECC calendar has a day-ahead session on this date — ie.
     whether a DAM trade can exist for it at all.

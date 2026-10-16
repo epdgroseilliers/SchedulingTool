@@ -617,6 +617,9 @@ def add_tag(link_key, buy_leg, sell_leg, flow_date):
 
     tag = default_tag(buy_leg, sell_leg, {}, flow_date, pse_for=pse_for_market)
     tag["name"] = f"{tag['name']} {number}"
+    # Not ready: it has no hours yet, and a tag that counted itself in
+    # would hold up the file for the ones that are finished.
+    tag["ready"] = False
     # One link, one line on the board, one state — see link_state.
     tag["state"] = link_state(link_key)
     st.session_state.mv_tags[key] = tag

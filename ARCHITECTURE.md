@@ -29,7 +29,9 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 calendar nothing, which is the whole reason it writes them
                 (FIXED_SHAPE_HOURS).
   trade.py      Trade-level rules: price formatting, the DAM/RT date
-                default, and the validation/warnings the legacy macro ran
+                default, which flow dates belong to one trading session
+                (session_days, which is what a tag's day folder is named
+                for), and the validation/warnings the legacy macro ran
                 before writing to the DB.
   matching.py   Phase 2: re-expanding a stored date-range + He row back
                 down to one flow date's hours (the reverse of
@@ -192,7 +194,10 @@ data/         External state: the database and the WECC calendar. Nothing
                  blank copy of the desk's own template (the .xlsx beside
                  it) rather than building one from scratch — unlike a bid
                  file, every real tag file puts the same label in the same
-                 cell. See PROJECT.md for the row map.
+                 cell. Several tags go in one file as three-column groups
+                 side by side, the second copied off the first; the day
+                 folder is the trading session's, not the day's. See
+                 PROJECT.md for the row map.
   bidfiles/      Writing the desk's downstream market bid files — one
                  module per market, since each has its own real spreadsheet
                  format. swpw.py is the first; see PROJECT.md for what's

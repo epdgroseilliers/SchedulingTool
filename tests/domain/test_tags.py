@@ -247,10 +247,12 @@ class TestWhatAMarketEndSettlesByItself:
         assert tag["sink"]["market"] == "SPP"
 
     def test_and_names_the_delivery_point_in_the_header_instead(self):
+        # Where it opens as ?? like every other market: a plausible wrong
+        # node is harder to catch than an obvious missing one.
         tag = default_tag(
             leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
         )
-        assert tag["label"] == "SOURCE-SWPW(CRSP)"
+        assert tag["label"] == "SOURCE-SWPW(??)"
 
     # (market, header piece, Market cell, control area) exactly as the desk
     # gave them. Three of the four write something in the Market cell that
@@ -258,7 +260,7 @@ class TestWhatAMarketEndSettlesByItself:
     TABLE = [
         ("CAISO", "CAISO(??)", "CISO", "CISO"),
         ("AESO", "AESO(??)", "AESO", "AESO"),
-        ("SWPW", "SWPW(CRSP)", "SPP", "SWPW"),
+        ("SWPW", "SWPW(??)", "SPP", "SWPW"),
         ("SWPP", "SWPP(??)", "SPP", "SWPP"),
     ]
 
@@ -321,6 +323,32 @@ class TestWhatAMarketEndSettlesByItself:
         tag = default_tag(leg(BUY, "EPE"), leg(SELL, "BPAT"), {1: 1.0}, FLOW)
         assert tag["label"] == "SOURCE-SINK"
         assert market_end_fields(leg(SELL, "SWPW")) == {}
+
+
+class TestANodeNobodyHasNamed:
+    """`??` in the header means the market end's scheduling point is still
+    unknown, and the header is the only place it is ever written down."""
+
+    def _into_swpw(self, **over):
+        tag = default_tag(
+            leg(BUY, "EPE"), leg(SELL, "SWPW", source="market"), {1: 1.0}, FLOW
+        )
+        tag["source"]["gca"] = "GWA"
+        tag.update(over)
+        return tag
+
+    def test_it_stops_the_file_being_written(self):
+        assert any(PATH_UNKNOWN in e for e in tag_errors(self._into_swpw()))
+
+    def test_naming_it_clears_the_complaint(self):
+        tag = self._into_swpw(label="SOURCE-SWPW(CRSP)")
+        assert not [e for e in tag_errors(tag) if PATH_UNKNOWN in e]
+
+    def test_a_bilateral_header_was_never_complaining(self):
+        tag = default_tag(leg(BUY, "EPE"), leg(SELL, "BPAT"), {1: 1.0}, FLOW)
+        tag["source"]["gca"], tag["sink"]["lca"] = "GWA", "BPAT"
+        assert tag["label"] == "SOURCE-SINK"
+        assert not [e for e in tag_errors(tag) if PATH_UNKNOWN in e]
 
 
 class TestWhoStillHasToTagIt:
@@ -579,7 +607,25 @@ class TestWhichFolderADayBelongsIn:
         for name in ("Archives", "Templates", "Systematics", "Test", ""):
             assert not folder_covers(name, FLOW)
 
-    def test_a_day_folder_that_does_not_exist_yet_is_named_for_one_day(self):
-        # Never a two-day name: pairing days is a judgement about the
-        # trading session, not something to invent.
-        assert day_folder_name(FLOW) == "25 September 2026"
+    def test_the_short_month_the_desk_writes_now_is_matched_too(self):
+        # Its own root holds "13 Oct 2026" and "9-10 Oct 2026" beside the
+        # older long ones; matching only the long form meant a second
+        # folder got created next to today's.
+        assert folder_covers("25 Sep 2026", FLOW)
+        assert folder_covers("25-26 Sep 2026", date(2026, 9, 26))
+
+    def test_a_new_folder_is_named_for_the_session(self):
+        # One folder per session, not per day: Friday and Saturday traded
+        # together go in one.
+        assert day_folder_name([FLOW]) == "25 Sep 2026"
+        assert day_folder_name([FLOW, date(2026, 9, 26)]) == "25-26 Sep 2026"
+
+    def test_a_single_day_can_be_given_on_its_own(self):
+        assert day_folder_name(FLOW) == "25 Sep 2026"
+
+    def test_a_session_across_two_months_falls_back_to_its_first_day(self):
+        # The desk has no folder of that shape on file, so there is
+        # nothing to copy and "31-1 Nov" would be a guess.
+        assert day_folder_name(
+            [date(2026, 10, 31), date(2026, 11, 1)]
+        ) == "31 Oct 2026"

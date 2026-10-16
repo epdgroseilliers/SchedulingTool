@@ -7,6 +7,7 @@ tests/ui/test_scheduling_view.py's own docstring. Every generated file goes
 to tmp_path via `redirect_tags`; nothing here touches Y:\\West.
 """
 
+import copy
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from streamlit.testing.v1 import AppTest
 
 import data.tagfiles.bilateral as tagfile
 from dialog_helpers import let_go_of_closed_widgets
-from domain.tags import MAG_PSE
+from domain.tags import MAG_PSE, day_folder_name
 from ui.scheduling.state import BIDFILE_DIALOG, LINK_DIALOG, PENDING_TAG
 from ui.scheduling.tag import seed_is_stale, table_height
 
@@ -48,8 +49,15 @@ def no_bilateral_db(monkeypatch):
 
 @pytest.fixture
 def redirect_tags(tmp_path, monkeypatch):
+    """The tag root and the trading session the folder is named for.
+
+    Not TEST_MODE: that is off in production now, so leaving it on here
+    would exercise a path the desk no longer takes. The session is stubbed
+    because the folder is named for it and the live calendar is not this
+    test's business.
+    """
     monkeypatch.setattr(tagfile, "TAG_FOLDER", tmp_path)
-    monkeypatch.setattr(tagfile, "TEST_MODE", True)
+    monkeypatch.setattr(tagfile, "sessions_near", lambda day: {FLOW: [FLOW]})
     return tmp_path
 
 
@@ -106,6 +114,12 @@ def _drawing(trades=(BUY_LEG, SELL_LEG)):
         "type": "link_request", "from": "session:0", "to": "session:1"
     })
     return _in_dialog(at)
+
+
+def _day_folder(root):
+    """Where a tag for this flow date lands: the session's own folder,
+    which the redirect_tags fixture stubs to this one day."""
+    return root / day_folder_name([FLOW])
 
 
 def _tag(at, link_id="L1"):
@@ -393,13 +407,13 @@ class TestGenerating:
         at = _fill(_tagging())
         assert not at.button("mv_tag_L1_generate").disabled
         at = _click(at, "Generate tag file")
-        written = list((redirect_tags / "Test").glob("*.xlsx"))
+        written = list((_day_folder(redirect_tags)).glob("*.xlsx"))
         assert len(written) == 1, [s.value for s in at.error]
         assert any("Tag written to" in s.value for s in at.success)
 
     def test_what_it_writes_is_the_links_own_schedule(self, redirect_tags):
         _click(_fill(_tagging()), "Generate tag file")
-        path = next((redirect_tags / "Test").glob("*.xlsx"))
+        path = next((_day_folder(redirect_tags)).glob("*.xlsx"))
         ws = openpyxl.load_workbook(path)["BIDS"]
         # PPT HE7-22 at 60 MW, on the sheet's EPT rows (HE10-24 + the first
         # star) — see data/tagfiles/bilateral.py.
@@ -415,14 +429,14 @@ class TestGenerating:
         at = _click(_fill(_tagging()), "Generate tag file")
         at = _click(_in_dialog(at), "Generate tag file")
         assert any("already exists" in e.value for e in at.error)
-        assert len(list((redirect_tags / "Test").glob("*.xlsx"))) == 1
+        assert len(list((_day_folder(redirect_tags)).glob("*.xlsx"))) == 1
 
     def test_unless_the_trader_ticks_overwrite(self, redirect_tags):
         at = _click(_fill(_tagging()), "Generate tag file")
         at.checkbox("mv_tag_L1_overwrite").set_value(True)
         at = _click(_in_dialog(at).run(), "Generate tag file")
         assert any("Tag written to" in s.value for s in at.success)
-        assert len(list((redirect_tags / "Test").glob("*.xlsx"))) == 1
+        assert len(list((_day_folder(redirect_tags)).glob("*.xlsx"))) == 1
 
     def test_a_write_that_fails_is_reported_not_swallowed(self, redirect_tags, monkeypatch):
         def boom(tag, overwrite=False):
@@ -651,15 +665,12 @@ class TestUsingAHistoricalRoute:
         assert _tag(at)["source"]["point"] == "RIMROCK"
         assert _tag(at)["sink"]["point"] == "SWPW_HUB"
 
-    def test_it_carries_a_reservation_still_good_for_the_flow_date(
-        self, monkeypatch
-    ):
+    def test_it_brings_no_transmission_rows_at_all(self, monkeypatch):
+        # A reservation number belongs to a day, not to a route, so last
+        # month's are dead on arrival and the rows they came on were being
+        # deleted more often than kept.
         at = self._result(monkeypatch)
-        assert _numbers(at) == ["109267045", "EPE5PVPV"]
-
-    def test_and_the_oasis_lookup_fills_its_path_on_the_same_click(self, monkeypatch):
-        at = self._result(monkeypatch)
-        assert _transmissions(at)[0]["path"] == OASIS["109267045"]["path"]
+        assert _numbers(at) == []
 
     def test_it_leaves_carbon_copy_and_the_name_alone(self, monkeypatch):
         _stub_history(monkeypatch, [HISTORICAL_TAG])
@@ -674,52 +685,6 @@ class TestUsingAHistoricalRoute:
         _stub_history(monkeypatch, [HISTORICAL_TAG])
         at = _use_route(_click(_drawing(), "Lookup old tags"))
         assert _tag_expander(at).proto.expanded is True
-
-class TestWhichReservationNumbersCarryForward:
-    """A reservation number belongs to a day, not to a route — see
-    ui.scheduling.tag._carry_reservations."""
-
-    def _result(self, monkeypatch):
-        _stub_history(monkeypatch, [HISTORICAL_TAG])
-        return _use_route(_click(_tagging(), "Lookup old tags"))
-
-    def test_one_still_good_on_the_flow_date_is_carried(self, monkeypatch):
-        assert "109267045" in _numbers(self._result(monkeypatch))
-
-    def test_one_that_is_not_a_reference_is_carried_as_it_stands(self, monkeypatch):
-        # EPE5PVPV isn't dated, so there is nothing about it to expire.
-        assert "EPE5PVPV" in _numbers(self._result(monkeypatch))
-
-    def test_an_expired_one_is_not(self, monkeypatch):
-        # The whole point: a number off a tag run two months ago is dead,
-        # and a stale number is worse than an empty cell.
-        assert "110616287" not in _numbers(self._result(monkeypatch))
-
-    def test_and_neither_is_its_path(self, monkeypatch):
-        # A path is only ever looked up, never copied off an old route —
-        # otherwise it reads like one this day's reservation justifies,
-        # with nothing behind it.
-        at = self._result(monkeypatch)
-        assert OASIS["110616287"]["path"] not in [
-            r["path"] for r in _transmissions(at)
-        ]
-
-    def test_one_that_is_not_ours_is_not_carried_either(self, monkeypatch):
-        # Unverifiable is not the same as good: 999999999 is nobody's here.
-        assert "999999999" not in _numbers(self._result(monkeypatch))
-
-    def test_no_row_ever_arrives_with_a_path_and_no_reference(self, monkeypatch):
-        # The invariant: every path on screen has a reference behind it
-        # that a scheduler can check. The reverse is fine.
-        for row in _transmissions(self._result(monkeypatch)):
-            assert not (row["path"] and not row["reservation"])
-
-    def test_it_says_what_it_did_not_carry(self, monkeypatch):
-        at = self._result(monkeypatch)
-        said = " ".join(c.value for c in at.caption)
-        assert "not carried" in said
-        assert "not ours to check" in said
-
 
 #: The same route, but sinking into CISO rather than SWPW — what an
 #: EPE-MAG-SWPW link kept being offered before a market end settled its LCA.
@@ -739,6 +704,34 @@ INTO_CISO = {
          "pod_name": "CISO_HUB", "pod_ca": "CISO", "reservations": []},
     ],
 }
+
+
+class TestWhatARouteLeavesForTheScheduler:
+    """A route is a shape, not a day's paperwork."""
+
+    def _result(self, monkeypatch):
+        _stub_history(monkeypatch, [HISTORICAL_TAG])
+        return _use_route(_click(_tagging(), "Lookup old tags"))
+
+    def test_the_transmission_block_is_left_empty(self, monkeypatch):
+        assert _numbers(self._result(monkeypatch)) == []
+
+    def test_even_the_reference_that_is_still_good_today(self, monkeypatch):
+        # 109267045 covers this flow date and is still not carried: the
+        # rule is that the number is typed, full stop.
+        assert "109267045" not in _numbers(self._result(monkeypatch))
+
+    def test_and_no_path_arrives_without_one(self, monkeypatch):
+        # The invariant: every path on screen has a reference behind it
+        # that a scheduler can check.
+        for row in _transmissions(self._result(monkeypatch)):
+            assert not (row["path"] and not row["reservation"])
+
+    def test_a_number_typed_afterwards_still_fills_its_own_path(self, monkeypatch):
+        # Which is the one direction that puts nothing on screen nobody
+        # asked for.
+        at = _type_reservation(self._result(monkeypatch), "109267045")
+        assert _transmissions(at)[0]["path"] == OASIS["109267045"]["path"]
 
 
 class TestALinkIntoAMarket:
@@ -975,11 +968,8 @@ class TestSplittingALinkAcrossSeveralTags:
 
 
 class TestGeneratingASplitLinksTags:
-    def _ready(self, at, link_id):
-        """Fill in what a tag needs before it can be written."""
-        at.text_input(f"mv_tag_{link_id}_Source_gca").set_value("GWA")
-        at.text_input(f"mv_tag_{link_id}_Sink_lca").set_value("BPAT")
-        return _in_dialog(at).run()
+    """One file per press, holding the tags marked ready. Marking one and
+    generating is how a single tag of a split goes out on its own."""
 
     def _edit(self, mw):
         return {
@@ -987,42 +977,85 @@ class TestGeneratingASplitLinksTags:
             "added_rows": [], "deleted_rows": [],
         }
 
-    def test_one_press_writes_a_file_for_every_tag(self, redirect_tags):
-        at = _click(_tagging(), "Split")
-        for key in ("L1", "L1_t2"):
+    def _ready(self, at, *keys, hours=None):
+        """Fill in what a tag needs and tick it ready — every field in one
+        run, since AppTest carries no data editor state between them."""
+        for key in keys:
             at.text_input(f"mv_tag_{key}_Source_gca").set_value("GWA")
             at.text_input(f"mv_tag_{key}_Sink_lca").set_value("BPAT")
-        at.session_state["mv_tag_L1_hours"] = self._edit(20)
-        at.session_state["mv_tag_L1_t2_hours"] = self._edit(40)   # 60 on the link
-        at = _in_dialog(at).run()
-        assert not at.error
+            at.checkbox(f"mv_tag_{key}_ready").set_value(True)
+            if hours:
+                at.session_state[f"mv_tag_{key}_hours"] = self._edit(hours[key])
+        return _in_dialog(at).run()
 
-        at = _click(at, "Generate tag files")
-        assert len(list(redirect_tags.rglob("*.xlsx"))) == 2
+    def _files(self, folder):
+        return sorted(p.name for p in folder.rglob("*.xlsx"))
+
+    def test_a_new_split_tag_is_not_ready_until_it_is_said_to_be(self):
+        # Or it would hold up the file for the ones that are finished.
+        at = _click(_tagging(), "Split")
+        assert _tag(at, "L1_t2")["ready"] is False
+        assert _tag(at)["ready"] is True
+
+    def test_one_ready_tag_writes_one_ordinary_file(self, redirect_tags):
+        at = _click(_tagging(), "Split")           # tag 2 is not ready
+        at = self._ready(at, "L1")
+        at = _click(at, "Generate tag file")
+        assert len(self._files(redirect_tags)) == 1
+        assert "SPLIT" not in self._files(redirect_tags)[0]
+
+    def test_an_unready_tag_does_not_hold_up_the_ready_one(self, redirect_tags):
+        # Tag 2 has no hours, no GCA and no LCA, and none of that counts.
+        at = self._ready(_click(_tagging(), "Split"), "L1")
+        assert not [b for b in at.button if b.label.startswith("Generate")][0].disabled
+
+    def test_two_ready_tags_share_one_file(self, redirect_tags):
+        at = _click(_tagging(), "Split")
+        at = self._ready(at, "L1", "L1_t2", hours={"L1": 20, "L1_t2": 40})
+        at = _click(at, "Generate tag file")
+        written = self._files(redirect_tags)
+        assert len(written) == 1
+        assert written[0].endswith("SPLIT.xlsx")
+
+    def test_and_both_are_in_it(self, redirect_tags):
+        at = _click(_tagging(), "Split")
+        at = self._ready(at, "L1", "L1_t2", hours={"L1": 20, "L1_t2": 40})
+        _click(at, "Generate tag file")
+        import openpyxl
+
+        ws = openpyxl.load_workbook(
+            next(redirect_tags.rglob("*.xlsx"))
+        )["BIDS"]
+        assert ws["D8"].value == "GWA" and ws["G8"].value == "GWA"
+
+    def test_nothing_is_written_when_nothing_is_ready(self, redirect_tags):
+        at = _click(_tagging(), "Split")
+        at.checkbox("mv_tag_L1_ready").set_value(False)
+        at = _in_dialog(at).run()
+        assert [b for b in at.button if b.label.startswith("Generate")][0].disabled
 
     def test_a_split_that_does_not_add_up_is_not_written_at_all(self):
-        # Both tags are complete in themselves — hours, GCA, LCA — and the
-        # only thing wrong is that 20 and 30 are not the 60 on the link.
-        #
-        # Every field in one run: AppTest carries no data editor state
-        # between runs, so filling the fields on a later one would take the
-        # typed hours back out again.
+        # Both tags complete in themselves and both ready; the only thing
+        # wrong is that 20 and 30 are not the 60 on the link.
         at = _click(_tagging(), "Split")
-        for key in ("L1", "L1_t2"):
-            at.text_input(f"mv_tag_{key}_Source_gca").set_value("GWA")
-            at.text_input(f"mv_tag_{key}_Sink_lca").set_value("BPAT")
-        at.session_state["mv_tag_L1_hours"] = self._edit(20)
-        at.session_state["mv_tag_L1_t2_hours"] = self._edit(30)
-        at = _in_dialog(at).run()
-
-        assert not [e for e in at.error if "required" in e.value]
+        at = self._ready(at, "L1", "L1_t2", hours={"L1": 20, "L1_t2": 30})
         assert any("less than this link" in e.value for e in at.error)
         assert [b for b in at.button if b.label.startswith("Generate")][0].disabled
 
+    def test_but_it_does_not_stop_a_partial_split_going_out(self):
+        # With tag 2 still unready the shares obviously don't add up yet,
+        # and that is exactly when a trader writes the part that is done.
+        at = self._ready(_click(_tagging(), "Split"), "L1", hours={"L1": 20})
+        assert any("less than this link" in e.value for e in at.error)
+        assert not [b for b in at.button if b.label.startswith("Generate")][0].disabled
+
     def test_an_unsplit_link_still_writes_the_one(self, redirect_tags):
-        at = self._ready(_tagging(), "L1")
+        at = _tagging()
+        at.text_input("mv_tag_L1_Source_gca").set_value("GWA")
+        at.text_input("mv_tag_L1_Sink_lca").set_value("BPAT")
+        at = _in_dialog(at).run()
         at = _click(at, "Generate tag file")
-        assert len(list(redirect_tags.rglob("*.xlsx"))) == 1
+        assert len(self._files(redirect_tags)) == 1
 
 
 class TestWhoStillHasToTagThisLink:
@@ -1066,7 +1099,7 @@ class TestWhatSinkingIntoSwpwFillsIn:
         return _tagging(trades=(BUY_LEG,), frm="session:0", market="SWPW")
 
     def test_the_header_names_the_delivery_point(self):
-        assert _tag(self._into_swpw())["label"] == "SOURCE-SWPW(CRSP)"
+        assert _tag(self._into_swpw())["label"] == "SOURCE-SWPW(??)"
 
     def test_the_market_cell_is_the_pool_and_the_lca_the_market(self):
         tag = _tag(self._into_swpw())
@@ -1090,6 +1123,81 @@ class TestWhatSinkingIntoSwpwFillsIn:
         assert _tag(at)["sink"]["point"] == ""
         # The rest of the route still landed.
         assert _tag(at)["source"]["point"] == "RIMROCK"
+
+
+def _many_routes(count):
+    """`count` distinct recipes, all sharing this link's counterparties so
+    every one of them is offered. They differ only in where the power
+    starts, which is enough to make each its own route."""
+    routes = []
+    for n in range(count):
+        route = copy.deepcopy(HISTORICAL_TAG)
+        route["tag_index"] = 100 + n
+        route["physical_path"][0]["por_name"] = f"PLANT{n}"
+        routes.append(route)
+    return routes
+
+
+class TestSeeingMoreThanTheFirstFour:
+    """The ranking is a guess, and a guess that puts the right route fifth
+    is no use if fifth can't be reached."""
+
+    def _routes(self, at):
+        return [b for b in at.button if b.label == "Use this route"]
+
+    def _turn(self, at, label):
+        """Press a pager button and let the tree settle. The press reruns
+        the dialog fragment, and AppTest needs one more run after that
+        before its element tree catches up — the session state is right
+        immediately, the widgets are a render behind."""
+        return _in_dialog(_click(at, label)).run()
+
+    def _lookup(self, monkeypatch, count=9):
+        _stub_history(monkeypatch, _many_routes(count))
+        return _click(_tagging(), "Lookup old tags")
+
+    def test_four_at_a_time(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        assert len(self._routes(at)) == 4
+
+    def test_and_it_says_which_four_of_how_many(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        assert any("1-4 of 9" in c.value for c in at.caption)
+
+    def test_next_shows_the_four_behind_them(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        first = [b.key for b in self._routes(at)]
+        at = self._turn(at, "Next 4")
+        assert [b.key for b in self._routes(at)] != first
+        assert any("5-8 of 9" in c.value for c in at.caption)
+
+    def test_and_back_returns(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        first = [b.key for b in self._routes(at)]
+        at = self._turn(self._turn(at, "Next 4"), "Back")
+        assert [b.key for b in self._routes(at)] == first
+
+    def test_the_last_page_can_be_short(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        at = self._turn(self._turn(at, "Next 4"), "Next 4")
+        assert len(self._routes(at)) == 1
+        assert any("9-9 of 9" in c.value for c in at.caption)
+
+    def test_there_is_nowhere_to_go_from_the_ends(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        assert [b for b in at.button if b.label == "Back"][0].disabled
+        at = self._turn(self._turn(at, "Next 4"), "Next 4")
+        assert [b for b in at.button if b.label == "Next 4"][0].disabled
+
+    def test_no_pager_at_all_when_four_is_the_lot(self, monkeypatch):
+        at = self._lookup(monkeypatch, count=4)
+        assert not [b for b in at.button if b.label == "Next 4"]
+
+    def test_a_fresh_lookup_starts_from_the_top(self, monkeypatch):
+        at = self._lookup(monkeypatch)
+        at = self._turn(at, "Next 4")
+        at = _click(at, "Lookup old tags")
+        assert any("1-4 of 9" in c.value for c in at.caption)
 
 
 class TestWhatARouteCardShows:
@@ -1191,15 +1299,14 @@ class TestAnEditorShowsEveryRowItHolds:
 
         assert self._height(0) == self._height(MIN_TABLE_ROWS - 1)
 
-    def test_the_transmission_block_grows_with_a_route(self, monkeypatch):
+    def test_the_transmission_block_grows_with_what_is_typed_into_it(self):
         from ui.scheduling.tag import table_height
 
-        _stub_history(monkeypatch, [HISTORICAL_TAG])
         at = _tagging()
         before = table_height(_transmissions(at))
-        at = _use_route(_click(at, "Lookup old tags"))
-        assert table_height(_transmissions(at)) >= before
-        assert len(_transmissions(at)) >= 2
+        at = _type_reservation(at, "109267045", "110616287", "FCATBTEP")
+        assert len(_transmissions(at)) == 3
+        assert table_height(_transmissions(at)) > before
 
 
 

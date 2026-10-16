@@ -8,7 +8,8 @@ Every write goes to tmp_path via the `redirect_tags` fixture — never
 Y:\\West.
 """
 
-from datetime import date
+from datetime import date, timedelta
+from pathlib import Path
 
 import openpyxl
 import pytest
@@ -21,7 +22,14 @@ FLOW = date(2026, 9, 25)
 
 @pytest.fixture
 def redirect_tags(tmp_path, monkeypatch):
+    """The tag root, and the trading session the folder is named for.
+
+    Both, because the folder is the session's: without a stubbed calendar
+    every writing test below would go and ask the live one what days were
+    traded with this flow date.
+    """
     monkeypatch.setattr(tagfile, "TAG_FOLDER", tmp_path)
+    monkeypatch.setattr(tagfile, "sessions_near", lambda day: {FLOW: [FLOW]})
     return tmp_path
 
 
@@ -52,8 +60,8 @@ def a_tag(**over):
     return tag
 
 
-def sheet(tag):
-    return tagfile.build_workbook(tag)["BIDS"]
+def sheet(*tags):
+    return tagfile.build_workbook(list(tags))["BIDS"]
 
 
 class TestTheHeaderAndTheTwoHalves:
@@ -198,7 +206,7 @@ class TestTheTemplateItself:
 
     def test_building_a_tag_never_writes_to_the_template(self):
         before = tagfile.TEMPLATE.read_bytes()
-        tagfile.build_workbook(a_tag())
+        tagfile.build_workbook([a_tag()])
         assert tagfile.TEMPLATE.read_bytes() == before
 
     def test_two_tags_do_not_bleed_into_each_other(self):
@@ -208,23 +216,102 @@ class TestTheTemplateItself:
         assert second["D7"].value is None
 
 
+@pytest.fixture
+def two_day_session(monkeypatch):
+    """...and traded together with the next day, as a weekend pair is."""
+    monkeypatch.setattr(
+        tagfile, "sessions_near",
+        lambda day: {FLOW: [FLOW, FLOW + timedelta(days=1)]},
+    )
+
+
+class TestSeveralTagsInOneFile:
+    """The desk's own split files put one tag per column group, three
+    columns each, side by side on the same rows — read off
+    "Archives/May 2026/23-24 May 2026/... EPE - SWPW(CRSP) SPLIT.xlsx".
+    """
+
+    def _two(self):
+        first = a_tag(name="FIRST", label="SOURCE-SWPW(CRSP)")
+        second = a_tag(name="SECOND", label="SOURCE-SWPW(WAUW)")
+        second["source"]["gca"] = "EPE"
+        second["mw_by_hour"] = {h: 10.0 for h in range(1, 25)}
+        return [first, second]
+
+    def test_the_second_tag_lands_three_columns_over(self):
+        ws = sheet(*self._two())
+        assert ws["D5"].value == "SOURCE-SWPW(CRSP)"
+        assert ws["G5"].value == "SOURCE-SWPW(WAUW)"
+
+    def test_each_keeps_its_own_fields(self):
+        ws = sheet(*self._two())
+        assert (ws["D8"].value, ws["G8"].value) == ("GWA", "EPE")
+
+    def test_and_its_own_schedule(self):
+        ws = sheet(*self._two())
+        # PPT HE1 is EPT HE4 — see the module docstring on the hour column.
+        row = tagfile.hour_row(
+            tagfile.SOURCE_HOURS_ROW, tagfile.SOURCE_STAR_ROWS, 1
+        )
+        assert ws.cell(row, 4).value == 25.0
+        assert ws.cell(row, 7).value == 10.0
+
+    def test_the_new_group_gets_the_headers_too(self):
+        # Copied off the first group, so a change to the template reaches
+        # them without anyone writing the labels out again.
+        ws = sheet(*self._two())
+        assert (ws["G13"].value, ws["H13"].value) == ("MW", "PRICE")
+        assert (ws["G79"].value, ws["H79"].value, ws["I79"].value) == (
+            "Path", "# trans", "MW"
+        )
+        assert (ws["G93"].value, ws["H93"].value) == ("PSE", "Product")
+        assert (ws["G104"].value, ws["H104"].value) == ("Type", "Market")
+
+    def test_and_the_merges_and_widths_that_go_with_them(self):
+        ws = sheet(*self._two())
+        merged = {str(m) for m in ws.merged_cells.ranges}
+        assert "G7:I7" in merged and "G44:I44" in merged
+        assert ws.column_dimensions["G"].width == ws.column_dimensions["D"].width
+
+    def test_the_flow_date_is_written_once(self):
+        # Every tag in a file is one day's.
+        ws = sheet(*self._two())
+        assert ws[tagfile.DATE_CELL].value == FLOW
+        assert ws["F5"].value is None
+
+    def test_one_tag_still_fills_only_its_own_three_columns(self):
+        # The common case is unchanged: no empty groups appear beside it.
+        ws = sheet(a_tag())
+        assert ws["G5"].value is None
+        assert ws["G13"].value is None
+
+    def test_five_tags_reach_the_fifth_group(self):
+        ws = sheet(*[a_tag(name=str(n)) for n in range(5)])
+        assert tagfile.group_col(4) == 16        # column P
+        assert ws["P5"].value == a_tag()["label"]
+
+
 class TestWhereItLands:
-    def test_while_under_review_everything_goes_to_the_test_folder(self, redirect_tags):
-        assert tagfile.TEST_MODE, "flip this test's expectation when going live"
+    def test_a_tag_goes_to_the_sessions_own_folder(self, redirect_tags):
+        # Live: the desk wants its files where it files them. Turning
+        # TEST_MODE back on is what sends them to Test\\ instead.
+        assert not tagfile.TEST_MODE, "flip this test's expectation if it goes back on"
+        assert tagfile.day_folder(FLOW) == redirect_tags / "25 Sep 2026"
+
+    def test_test_mode_still_sends_everything_to_one_folder(
+        self, redirect_tags, monkeypatch
+    ):
+        monkeypatch.setattr(tagfile, "TEST_MODE", True)
         assert tagfile.day_folder(FLOW) == redirect_tags / "Test"
 
     def test_live_it_picks_the_day_folder_the_desk_already_has(
-        self, redirect_tags, monkeypatch
+        self, redirect_tags
     ):
-        monkeypatch.setattr(tagfile, "TEST_MODE", False)
         (redirect_tags / "25-26 September 2026").mkdir()
         (redirect_tags / "Templates").mkdir()
         assert tagfile.day_folder(FLOW) == redirect_tags / "25-26 September 2026"
 
-    def test_an_exact_day_folder_wins_over_a_copy_of_it(
-        self, redirect_tags, monkeypatch
-    ):
-        monkeypatch.setattr(tagfile, "TEST_MODE", False)
+    def test_an_exact_day_folder_wins_over_a_copy_of_it(self, redirect_tags):
         (redirect_tags / "25 September 2026 - Copy").mkdir()
         (redirect_tags / "25 September 2026").mkdir()
         assert tagfile.day_folder(FLOW) == redirect_tags / "25 September 2026"
@@ -232,46 +319,97 @@ class TestWhereItLands:
     def test_with_no_folder_for_the_day_it_names_a_new_one(
         self, redirect_tags, monkeypatch
     ):
-        monkeypatch.setattr(tagfile, "TEST_MODE", False)
-        assert tagfile.day_folder(FLOW) == redirect_tags / "25 September 2026"
+        # The short month the desk writes now: its own root holds
+        # "13 Oct 2026" and "9-10 Oct 2026" beside the older long ones.
+        assert tagfile.day_folder(FLOW) == redirect_tags / "25 Sep 2026"
 
-    def test_an_unreachable_root_still_produces_a_path(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(tagfile, "TEST_MODE", False)
+    def test_a_session_traded_together_gets_one_folder(
+        self, redirect_tags, monkeypatch, two_day_session
+    ):
+        # Friday and Saturday traded on Thursday are one session and one
+        # folder, which is how the desk files them.
+        assert tagfile.day_folder(FLOW) == redirect_tags / "25-26 Sep 2026"
+
+    def test_a_folder_the_desk_already_has_still_wins(
+        self, redirect_tags, monkeypatch, two_day_session
+    ):
+        # Including when it spells the month out, which the older ones do.
+        (redirect_tags / "25-26 September 2026").mkdir()
+        assert tagfile.day_folder(FLOW) == redirect_tags / "25-26 September 2026"
+
+    def test_an_unreachable_root_still_produces_a_path(
+        self, redirect_tags, monkeypatch, tmp_path
+    ):
+        # redirect_tags for the stubbed session, then the root moved
+        # somewhere that isn't there.
         monkeypatch.setattr(tagfile, "TAG_FOLDER", tmp_path / "not-mounted")
-        assert tagfile.day_folder(FLOW).name == "25 September 2026"
+        assert tagfile.day_folder(FLOW).name == "25 Sep 2026"
+
+    def test_an_unreadable_calendar_falls_back_to_the_day_itself(
+        self, redirect_tags, monkeypatch
+    ):
+        # A DB hiccup shouldn't quietly file a tag somewhere new.
+        def boom(day):
+            raise RuntimeError("no calendar")
+
+        monkeypatch.setattr(tagfile, "sessions_near", boom)
+        assert tagfile.day_folder(FLOW) == redirect_tags / "25 Sep 2026"
+
+    def test_several_tags_make_one_file_named_for_the_first(self, redirect_tags):
+        # They share nothing in the workbook but its name.
+        path = tagfile.target_path([a_tag(name="FIRST"), a_tag(name="SECOND")])
+        assert path.name.endswith("FIRST SPLIT.xlsx")
+
+    def test_and_one_tag_is_named_as_it_always_was(self, redirect_tags):
+        assert "SPLIT" not in tagfile.target_path([a_tag()]).name
 
     def test_the_full_target_path(self, redirect_tags):
-        assert tagfile.target_path(a_tag()) == (
-            redirect_tags / "Test"
+        assert tagfile.target_path([a_tag()]) == (
+            redirect_tags / "25 Sep 2026"
             / "Tag_dynamique_bilateral - September 25 2026 - ABEX-SWPW.xlsx"
         )
 
 
+class TestTheNetUnderTheSuite:
+    """TEST_MODE is off, so nothing but this keeps a forgetful test off the
+    desk's share — see tests/conftest.py::never_the_real_tag_folder."""
+
+    def test_no_test_can_reach_the_real_tag_share(self):
+        # Deliberately without redirect_tags: the autouse fixture is the
+        # whole point.
+        assert tagfile.TAG_FOLDER != Path(r"Y:\West\TAG Bilateral WEST")
+        assert "TAG Bilateral WEST" not in str(tagfile.TAG_FOLDER)
+
+    def test_and_a_write_without_the_fixture_lands_in_a_temp_folder(self):
+        written = tagfile.write_tag_file([a_tag()])
+        assert tagfile.TAG_FOLDER in written.parents
+
+
 class TestWriting:
     def test_it_writes_a_workbook_a_scheduler_can_open(self, redirect_tags):
-        path = tagfile.write_tag_file(a_tag())
+        path = tagfile.write_tag_file([a_tag()])
         assert path.exists()
         ws = openpyxl.load_workbook(path)["BIDS"]
         assert ws["D8"].value == "GWA"
         assert ws["D94"].value == "RRWE01"
 
     def test_it_creates_the_day_folder(self, redirect_tags):
-        assert not (redirect_tags / "Test").exists()
-        tagfile.write_tag_file(a_tag())
-        assert (redirect_tags / "Test").is_dir()
+        assert not (redirect_tags / "25 Sep 2026").exists()
+        tagfile.write_tag_file([a_tag()])
+        assert (redirect_tags / "25 Sep 2026").is_dir()
 
     def test_it_refuses_to_replace_a_tag_that_is_already_there(self, redirect_tags):
-        tagfile.write_tag_file(a_tag())
+        tagfile.write_tag_file([a_tag()])
         with pytest.raises(FileExistsError):
-            tagfile.write_tag_file(a_tag())
+            tagfile.write_tag_file([a_tag()])
 
     def test_overwrite_is_something_the_caller_has_to_ask_for(self, redirect_tags):
-        tagfile.write_tag_file(a_tag())
-        path = tagfile.write_tag_file(a_tag(label="SECOND GO"), overwrite=True)
+        tagfile.write_tag_file([a_tag()])
+        path = tagfile.write_tag_file([a_tag(label="SECOND GO")], overwrite=True)
         assert openpyxl.load_workbook(path)["BIDS"]["D5"].value == "SECOND GO"
 
     def test_two_names_on_one_day_are_two_files(self, redirect_tags):
-        tagfile.write_tag_file(a_tag())
-        second = tagfile.write_tag_file(a_tag(name="ABEX-SWPW second leg"))
+        tagfile.write_tag_file([a_tag()])
+        second = tagfile.write_tag_file([a_tag(name="ABEX-SWPW second leg")])
         assert second.name.endswith("ABEX-SWPW second leg.xlsx")
-        assert len(list((redirect_tags / "Test").glob("*.xlsx"))) == 2
+        assert len(list((redirect_tags / "25 Sep 2026").glob("*.xlsx"))) == 2

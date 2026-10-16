@@ -905,39 +905,54 @@ hours it fills are the **link's**, not all twenty-four: an hour the link
 doesn't run is an hour that tag can't have, and filling it would only hand
 the trader a check to clear.
 
-**Generate writes every tag in one press.** A link split across three paths
-is still one decision — the schedule is covered or it isn't — and a button
-per tab would be three chances to forget the third. One file per tag,
-reported a line each, blocked while any tag is incomplete or the shares
-don't add up. Their default names are numbered, because two tags of one
-link would otherwise be written to the same file.
+**Generate writes one file, holding the tags marked ready.** Each tab has
+a **Ready** tick; a link's ready tags go out together in a single workbook,
+side by side, which is how the desk's own split files read — its
+"23-24 May 2026 ... EPE - SWPW(CRSP) SPLIT.xlsx" carries five tags as five
+column groups on the same rows. Marking one ready and generating is how a
+single tag of a split goes out on its own.
 
-### Which reservation numbers carry forward
+A new split tag starts **not ready**: it has no hours yet, and a tag that
+counted itself in would hold up the file for the ones that are finished.
+Nothing about an unready tag is checked, either — no errors listed, no
+"this tag has no hours" — because it isn't going anywhere yet.
 
-A reservation number belongs to a *day*, not to a route — 92% of the desk's
-own references appear on exactly one — so copying one off a route run two
-months ago would be worse than leaving the cell empty: a scheduler notices a
-blank, but has to *catch* a stale number. Applying a route therefore splits
-its reservations three ways:
+The file is named after the first ready tag, with ` SPLIT` appended when
+it holds more than one. What blocks it: a ready tag's own errors, and a
+split that doesn't add up — but that last one only once **every** tag says
+it is ready, since before that the trader is deliberately writing the part
+that is done and of course the parts don't add up to the whole.
 
-- **Not a reference at all** (`FCATBTEP`, `EPE5PVPV`, a bare contract
-  number): carried as-is. Nothing about them is dated, so nothing expires.
-- **A reference OASIS still covers on the flow date**: carried, and the
-  reservation lookup fills its path from it on the same click.
-- **Anything else** — expired, or a counterparty's and so unverifiable:
-  nothing is carried, not even the row. A line under the matches says what
-  was left and why.
+### What a route brings, and what it leaves
 
-**A path is never carried, only ever looked up.** The Path column is filled
-from one place — OASIS, keyed on the number beside it — so a path on screen
-always has a reference behind it that a scheduler can go and check. Copying
-one off an old route would break that: it would read exactly like a path
-this day's reservation justifies, with nothing standing behind it. The
-reverse is fine and expected: a reference OASIS can't answer for sits there
-with its path blank.
+Applying a route fills the control areas, the source and sink points and
+the market path. **It brings no transmission rows at all.**
+
+That was not the first answer. A reservation number belongs to a *day*,
+not to a route — 92% of the desk's own references appear on exactly one D
+so the first version carried only the ones still good for the flow date
+and dropped the rest. In use even those were being deleted more often than
+kept, which is the honest signal that a route has nothing useful to say
+about today's paperwork. The number is typed, and its path then fills
+itself from OASIS, which is the one direction that puts nothing on screen
+nobody asked for.
+
+**A path is never carried, only ever looked up.** The Path column is
+filled from one place — OASIS, keyed on the number beside it — so a path
+on screen always has a reference behind it that a scheduler can go and
+check. The reverse is fine and expected: a reference OASIS can't answer
+for sits there with its path blank.
 
 The tag expander, normally shut on a link still being drawn, opens the
 moment a route is applied so there's something to see.
+
+**Four at a time, with more behind them.** The shortlist is a guess, and a
+guess that puts the right route fifth is no use if fifth can't be reached
+D so "Next 4" and "Back" page through the ranking, with "5-8 of 20"
+saying where you are. The lookup itself is no slower for it: what it costs
+is the OATI read and the grouping, and those happen once however many
+pages are kept. Ranking twenty instead of four is free, since every recipe
+is scored either way and the limit only truncates the sorted list.
 
 ### The shape of the popup
 
@@ -1051,9 +1066,14 @@ anyway. The counterparty's own name is already in the Market cell and in
 the market path; the header line is about the shape of the deal.
 
 **The node is not known when a link is drawn**, so it opens as the same
-`??` the path string uses for a party nobody has named yet — except SWPW,
-where CRSP is the default because it is the delivery point on 1,791 of the
-desk's own SWPP-into-SWPW segments in a year against 720 for WAUW.
+`??` the path string uses for a party nobody has named yet — for every
+market, including the one whose commonest node is obvious. A plausible
+wrong node is harder to catch than an obvious missing one.
+
+**And `??` stops the file being written.** It is an ordinary tag error,
+listed beside the fields with the rest and disabling Generate, because the
+header is the only place a market end's scheduling point is written down:
+a tag that went out still saying `??` would name no point at all.
 
 **No market end fills the sheet's Source/Sink cell.** That end names its
 node in the header instead, so the cell stays empty on that side. A key
@@ -1190,7 +1210,7 @@ difference is that the tag layout is genuinely fixed: all 2,638 real tag
 files under `Y:\West\TAG Bilateral WEST` put the same label in the same
 cell, so the row map below is read off the whole set, not off one example.
 
-    C5  flow date        D5  header line ("SOURCE-SWPW(WAUW)")
+    C5  flow date        D5  header line ("SOURCE-SWPW(CRSP)")
     D7-D12   Market / GCA  / Source / PSE / comment / contract
     D44-D49  Market / LCA  / Sink   / PSE / comment / contract
     rows 14-37 + 38-40   MW, source half   (EPT HE1-24, then the stars)
@@ -1198,6 +1218,19 @@ cell, so the row map below is read off the whole set, not off one example.
     rows 80-92   Path / # trans / MW
     rows 94-103  Market Path Product: PSE / Product / Contract
     rows 105-112 Carbon Copy: Type / Market
+
+**A file can hold several tags, three columns each.** D/E/F is the first,
+G/H/I the second, J/K/L the third — same rows, same labels down column C,
+one group per tag. Read off the desk's own split file,
+`Archives/May 2026/23-24 May 2026/... EPE - SWPW(CRSP) SPLIT.xlsx`, which
+carries five that way. Only the flow date in C5 is shared; everything else
+is per tag, including the header line.
+
+The bundled template is the single-tag one, so a second group is **copied
+off the first** when there is a second tag — values, styles, merges and
+column widths. That way every label still comes from the template (change
+it once and the extra groups follow), and a file with one tag is byte for
+byte the file it always was, with no empty groups beside it.
 
 The Carbon Copy block is the one part that isn't universal — it's absent
 from the older files — which is why `folder_covers` and the row map treat
@@ -1209,14 +1242,42 @@ PPT*, above. Confirmed twice against the desk's files: a tag named
 "… TEPC HE7-14" fills rows 23-30 (EPT HE10-17), and a full-day position
 fills EPT HE4-24 plus the three stars.
 
-**Where it lands.** `TEST_MODE = True` while this is under review, so every
-generated tag goes to `…\TAG Bilateral WEST\Test\` and nothing can be
-mistaken for a real tag. Live, it files under the day's own folder — the
-existing one if there is one, since the desk pairs days ("25-26 September
-2026") by a judgement about the trading session that the app shouldn't
-invent. Generating over an existing file needs the Overwrite tick: two tags
-on one day sharing a name is far more likely to be a second leg needing its
-own name.
+**Where it lands.** `TEST_MODE` is **off**: tags go where the desk files
+them. It was on while the feature was under review, sending every tag to
+`…\TAG Bilateral WEST\Test\` so nothing could be mistaken for a real one,
+and turning it back on is still a one-line change — but note that it
+flattens every tag into that one folder, which makes it the one setting
+under which the rule below can't be seen working. That is what the first
+live test of this ran into: the folder was correct and never reached.
+
+Since the flag was also what kept the *test suite* off the share, there is
+now an autouse fixture (`tests/conftest.py::never_the_real_tag_folder`)
+pointing the writer at a temp folder for every test, so a test that
+forgets to redirect still can't put a file where a scheduler would pick it
+up.
+
+It files under **one folder per trading session**, created if it
+isn't there: `16-17 Oct 2026` for a Friday and Saturday traded together on
+the Thursday, `13 Oct 2026` for a day traded alone. The session's days come
+from the WECC calendar (`domain.trade.session_days`), which is the only
+thing that knows which days were traded together — the app no longer has
+to refuse to pair them.
+
+Short month, because that is what the desk writes now: its own root holds
+`13 Oct 2026` and `9-10 Oct 2026` beside the older `1 September 2026`.
+**Both spellings are matched**, which was a live bug before this D
+matching only the long form meant today's `15 Oct 2026` went unrecognized
+and a second folder would have been created beside it. An existing folder
+still wins over a new one either way: the desk names these by hand too,
+and two folders for one session is the one outcome nobody wants.
+
+A session straddling two months falls back to the first day alone. The
+desk has no folder of that shape on file, so there is nothing to copy, and
+`31-1 Nov` would be a guess everybody then has to live with.
+
+Generating over an existing file needs the Overwrite tick: two tags on one
+day sharing a name is far more likely to be a second leg needing its own
+name.
 
 ### Watch out for
 

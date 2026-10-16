@@ -367,10 +367,19 @@ def render_popup(legs, links, flow_date):
                 # two read as the same kind of line: what this one carries,
                 # what you can put on it in one go, and the one thing you
                 # can do to it.
-                carried, fill, drop = pane.columns(
-                    [4, 2, 1], vertical_alignment="center"
+                carried, mark, fill, drop = pane.columns(
+                    [3, 1, 2, 1], vertical_alignment="center"
                 )
                 carried.caption(f"{sum(hours.values()):,.0f} MWh on this tag")
+                tag["ready"] = mark.checkbox(
+                    "Ready",
+                    value=tag.get("ready", True),
+                    help="Include this tag in the file Generate writes. One "
+                         "file holds every ready tag of the link; a tag that "
+                         "isn't ready is left out of it, and out of what has "
+                         "to be filled in before it can be written.",
+                    key=f"mv_tag_{key}_ready",
+                )
                 _quick_fill(fill, key, tag, allocation)
                 if key != keys[0] and drop.button(
                     "Remove",
@@ -392,8 +401,16 @@ def render_popup(legs, links, flow_date):
 
         st.divider()
 
+        # A mismatch stops the file only once every tag says it is ready.
+        # Before that the trader is deliberately writing part of a split,
+        # and of course the parts don't add up to the whole yet.
+        every_tag_ready = all(
+            (tag_for(key) or {}).get("ready", True) for key in keys
+        )
         cols = st.columns([1, 1, 1, 4], vertical_alignment="center")
-        render_generate(cols[3], tag_key, blocked=bool(mismatch))
+        render_generate(
+            cols[3], tag_key, blocked=bool(mismatch) and every_tag_ready
+        )
         if cols[0].button(
             "Save" if editing else "Create link", type="primary", width="stretch"
         ):

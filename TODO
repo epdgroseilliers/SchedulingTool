@@ -1,16 +1,17 @@
 -Add bookout logic
 -Make the compliance source specified and nws pop-ups instead of banner
 -Add coloring for NWS, NCS, SS/ACS attributes and don't allow links CISO>NCS and NWS>!NWS
--add defaults to GCA/LCA in SWPW bid files
+-add defaults to GCA/LCA in SWPW bid files. I want the code to guess what are the correct GCA/LCA for the SWPW bids. It should do so by looking at historical tags which have the same upstream/downstream counterparty. It should give a score to each GCA/LCA that were historically seen with that counterparty. The score should be given based on occurences weighted with recentness. It shouldn't be forced to give only one answer. If two values are closely scored, it can split the schedule proportionnaly on score between those sources. Importantly, the user should always be able to overwrite it and once he does, the value entered has total authority.
+-Allow shapes to be parsed in the trade string (epe sells 150mw he9-12 and 100mw he13-14 at FC $4) and make sure those are considered as one trade for scheduling purposes
+-have the path strings say the schedule by default (25pv LL, 50mw he1-6 mead, etc.)
+-allow user to see all trading days canvas on one page or not. Allow easy switch from one day to the other (arrows and trade date shortcuts on the date selector)
 -Add hourly open positions
--Improve creation of tag files, input-to-excel fill is not right (have bilaterals be source or sink, not the market name)
 -Find a way to better handle multi-day tagging (a lot of repetitive actions for each day are happening)
 -Autofill splitted tags hourly mw schedule
 -allow to generate split tags individually
 -create one excel file for multiple split tags
 -Change the destination of the tag files to the actual date folder
 -Allow user to see more tag routes if necessary
--Recognize COB in the trade string
 -Have state of links follow tag state and update automatically
 -Change the trade hash to take into account the communication (two identical trades outside the communication are not allowed to be entered currently)
 -Move tagged deals to another canvas
@@ -78,6 +79,21 @@
      and the control area for CAISO, AESO, SWPW and SWPP, none of which is
      the market's own name. CEN is left out until its own workbooks are
      handled.
+    -DONE (v7): the desk's market table corrected (CAISO writes CAISO in
+     the header, a counterparty end writes SOURCE/SINK, no market end
+     fills the Source/Sink cell), no default node for any market, and a
+     header still saying ?? stops the file being written.
+    -DONE (v7): an old route brings no transmission rows at all. The
+     number is typed and its path fills itself from OASIS; carrying last
+     month's numbers only made rows to delete.
+    -DONE (v7): a Ready tick per split tag. Generate writes one workbook
+     holding the ready ones, several tags side by side the way the desk's
+     own SPLIT files read, named after the first with " SPLIT" appended.
+    -DONE (v7): tags file under one folder per trading session ("16-17 Oct
+     2026"), created if missing, in the short month the desk writes now --
+     and both spellings are matched, which they weren't before.
+    -DONE (v7): "Next 4"/"Back" under the route shortlist, for when the
+     ranking puts the right route fifth.
     -DONE (v6): a quick-fill box per tag — one MW across every hour the
      link runs, since most tags carry the same number all day.
     -DONE (v6): found the data editor bug for real. `height` is hashed into

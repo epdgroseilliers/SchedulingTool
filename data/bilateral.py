@@ -261,14 +261,27 @@ def find_duplicate_id(conn, row):
     """Id of an existing row matching this one on its core terms, else None.
 
     Core terms are TradeDate, StartDate, StopDate, He, TimeZone, IsBuy,
-    MarketId, PorPod, MW and price.
+    MarketId, PorPod, MW, price and Communication.
+
+    **Communication is part of what makes a trade distinct**, not metadata
+    about it: the same MW at the same price with the same counterparty can
+    legitimately be done twice on one day down two different channels, and
+    the desk needs both rows. Without it in here the second one was refused
+    as a duplicate of the first.
+
+    Written to survive a NULL on either side, which `=` alone does not:
+    an older row with no Communication is not the same trade as a new one
+    that names a channel, and the comparison has to say so rather than
+    quietly answering "no match" for the wrong reason.
     """
     sql = text(
         f"SELECT TOP 1 Id FROM {TRADES_TABLE} WHERE "
         "TradeDate = :trade_date AND StartDate = :start_date "
         "AND StopDate = :stop_date AND He = :he AND TimeZone = :time_zone "
         "AND IsBuy = :is_buy AND MarketId = :market_id AND PorPod = :por_pod "
-        "AND MW = :mw AND price = :price"
+        "AND MW = :mw AND price = :price "
+        "AND (Communication = :communication "
+        "OR (Communication IS NULL AND :communication IS NULL))"
     )
     return conn.execute(
         sql,
@@ -283,6 +296,7 @@ def find_duplicate_id(conn, row):
             "por_pod": row["por_pod"],
             "mw": row["mw"],
             "price": row["price"],
+            "communication": row["communication"],
         },
     ).scalar()
 

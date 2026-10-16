@@ -306,9 +306,25 @@ class TestFindDuplicateIdSql:
         find_duplicate_id(conn, dict(BASE_ROW))
         core = {
             "trade_date", "start_date", "stop_date", "he", "time_zone",
-            "is_buy", "market_id", "por_pod", "mw", "price",
+            "is_buy", "market_id", "por_pod", "mw", "price", "communication",
         }
         assert set(conn.params) == core
+
+    def test_the_channel_is_part_of_what_makes_a_trade_distinct(self):
+        # The same MW at the same price with the same counterparty can be
+        # done twice on one day down two different channels, and the desk
+        # needs both rows. Without this the second was refused.
+        conn = FakeConn()
+        find_duplicate_id(conn, dict(BASE_ROW, communication="ICE Chat"))
+        assert "Communication = :communication" in conn.sql
+        assert conn.params["communication"] == "ICE Chat"
+
+    def test_and_a_row_with_no_channel_is_not_the_same_as_one_with(self):
+        # `=` alone never matches NULL, which would answer "no duplicate"
+        # for the wrong reason; the comparison says so explicitly instead.
+        conn = FakeConn()
+        find_duplicate_id(conn, dict(BASE_ROW, communication=None))
+        assert "Communication IS NULL AND :communication IS NULL" in conn.sql
 
     def test_is_a_top_1_select(self):
         conn = FakeConn()

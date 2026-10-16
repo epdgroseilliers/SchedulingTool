@@ -64,6 +64,12 @@ _MONTHS = [
     "July", "August", "September", "October", "November", "December",
 ]
 
+#: How the desk abbreviates a month in a day folder's name. Counted off
+#: the tag root itself: the recent folders read "13 Oct 2026", "9-10 Oct
+#: 2026", "11-12 Oct 2026", where the older ones spell it out ("1 September
+#: 2026"). New folders follow the current practice; both are still matched.
+_SHORT_MONTHS = [month[:3] for month in _MONTHS]
+
 #: "25-26 September 2026" and "1 September 2026" — how the desk names the
 #: day folders under the tag root. A trailing " - Copy" is ignored.
 _FOLDER = re.compile(
@@ -124,6 +130,10 @@ def blank_tag(flow_date=None):
         # Who still has to tag this link — see TAG_STATES. Set by hand
         # for now; the board reads it to colour the link's line.
         "state": DEFAULT_TAG_STATE,
+        # Whether Generate writes this one. Only ever asked about a link
+        # split across several tags, where the trader finishes them one at
+        # a time; a link with a single tag has nothing to choose between.
+        "ready": True,
         # PPT hour-ending -> MW, straight off the link.
         "mw_by_hour": {},
     }
@@ -304,7 +314,10 @@ MARKET_CONTROL_AREAS = {
 #:
 #: `node` is the scheduling point at that end and is **not** known when a
 #: link is drawn, so it opens as the same `??` the path string uses for a
-#: party nobody has named yet, except where the desk has given a default.
+#: party nobody has named yet. No market gets a default, not even the one
+#: whose commonest node is obvious: a plausible wrong node is harder to
+#: catch than an obvious missing one, and the `??` is what tag_errors
+#: refuses to write a file over.
 #: A key present here settles that cell *including* when it settles it to
 #: blank, which is why every row's empty `point` is written out rather than
 #: left absent: a market end names its node in the header, and the sheet's
@@ -317,10 +330,7 @@ MARKET_CONTROL_AREAS = {
 MARKET_END_FIELDS = {
     "CAISO": {"header": "CAISO", "node": PATH_UNKNOWN, "market": "CISO", "point": ""},
     "AESO": {"header": "AESO", "node": PATH_UNKNOWN, "market": "AESO", "point": ""},
-    # CRSP is the default rather than a guess: it is the delivery point on
-    # 1,791 of the desk's own SWPP-into-SWPW segments in a year, against 720
-    # for WAUW and a handful for the other two.
-    "SWPW": {"header": "SWPW", "node": "CRSP", "market": "SPP", "point": ""},
+    "SWPW": {"header": "SWPW", "node": PATH_UNKNOWN, "market": "SPP", "point": ""},
     "SWPP": {"header": "SWPP", "node": PATH_UNKNOWN, "market": "SPP", "point": ""},
 }
 
@@ -467,6 +477,15 @@ def tag_errors(tag):
     check that the numbers are right is the scheduler's, not this app's.
     """
     errors = []
+    if PATH_UNKNOWN in (tag.get("label") or ""):
+        # The header is the one place a market end's scheduling point is
+        # written down (MARKET_END_FIELDS), and nothing else in the app
+        # knows it. A tag that went out still saying `??` would name no
+        # point at all.
+        errors.append(
+            f"The header still says {PATH_UNKNOWN} \u2014 name the point it "
+            "schedules to."
+        )
     if not tag.get("mw_by_hour"):
         errors.append("This tag has no hours — there is nothing to tag.")
     if not tag["source"]["gca"].strip():
@@ -514,26 +533,48 @@ def tag_filename(flow_date, name):
     )
 
 
-def day_folder_name(flow_date):
-    """'25 September 2026' — what to call a day folder that doesn't exist
-    yet. The desk also uses two-day names ("25-26 September 2026") for a
-    weekend or a holiday, but those are a judgement about which days get
-    traded together, so one is never *created* here — only matched."""
-    return f"{flow_date.day} {_MONTHS[flow_date.month - 1]} {flow_date.year}"
+def day_folder_name(days):
+    """'13 Oct 2026', or '16-17 Oct 2026' for a session traded together.
+
+    `days` is every flow date of the trading session, which is what the
+    desk files under: one folder per session, not per day, so both days of
+    a Friday/Saturday session land in "16-17 Oct 2026". A single day gets
+    the short form.
+
+    Falls back to the first day alone when the session straddles two
+    months or two years. The desk has no folder of that shape on file, so
+    there is nothing to copy, and inventing "31-1 Nov" would be a guess
+    written into a folder name everybody then has to live with.
+    """
+    days = sorted(days if isinstance(days, (list, tuple, set)) else [days])
+    first, last = days[0], days[-1]
+    month = _SHORT_MONTHS[first.month - 1]
+    if first == last or (first.month, first.year) != (last.month, last.year):
+        return f"{first.day} {month} {first.year}"
+    return f"{first.day}-{last.day} {month} {first.year}"
 
 
 def folder_covers(name, flow_date):
     """Whether a day folder's name covers this flow date.
 
-    Handles "1 September 2026", "25-26 September 2026" and the " - Copy"
-    Windows leaves behind. Anything else ("Archives", "Templates") answers
-    False, which is what keeps a tag out of them.
+    Handles "1 September 2026", "25-26 September 2026", the abbreviated
+    "13 Oct 2026" the desk writes now, and the " - Copy" Windows leaves
+    behind. Anything else ("Archives", "Templates") answers False, which is
+    what keeps a tag out of them.
+
+    Both spellings of the month, because the root holds both: matching only
+    the long one meant today's "15 Oct 2026" went unrecognized and a second
+    folder was created beside it.
     """
     match = _FOLDER.match(name or "")
     if not match:
         return False
     first, last, month, year = match.groups()
-    if month.lower() != _MONTHS[flow_date.month - 1].lower():
+    written = month.lower()
+    if written not in (
+        _MONTHS[flow_date.month - 1].lower(),
+        _SHORT_MONTHS[flow_date.month - 1].lower(),
+    ):
         return False
     if int(year) != flow_date.year:
         return False
