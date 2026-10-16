@@ -7,7 +7,7 @@ pytest                  # fast tier — no live DB required
 pytest --run-db         # also run tests marked `db` (live, read-only)
 ```
 
-1,076 tests total: all but 26 run with no network dependency beyond what
+1,135 tests total: all but 26 run with no network dependency beyond what
 rendering the app already needs (see below); those 26 are marked `db` and
 skipped unless `--run-db` is passed. Six more need node + jsdom and skip
 cleanly without them, and a couple skip on a weekday whose WECC trading
@@ -21,7 +21,10 @@ tests/
   domain/                  pure logic — no Streamlit, no DB, instant
     test_options.py
     test_grid.py
-    test_shapes.py           parse_shape/build_schedule(flat|custom) are pure;
+    test_shapes.py           parse_shape/build_schedule(flat|custom) are pure,
+                              and so is the grid of a block whose profile
+                              steps, together with the rule for when two
+                              quantities can share a block at all;
                               build_schedule(on_peak|off_peak) is marked db.
                               1x16 and 1x8 are pure too, which is the point
                               of them: they name their hours outright
@@ -31,7 +34,11 @@ tests/
     test_trade.py
     test_matching.py        Phase 2: He re-expansion, legs, links, open
                              positions, market squares — the flow date's peak
-                             flag is passed in, so this needs no calendar
+                             flag is passed in, so this needs no calendar.
+                             Also one square per trade rather than per row:
+                             which rows are one trade whose MW steps during
+                             the day, and which two deals only look like
+                             one (same everything, overlapping hours)
     test_bidfiles.py        Phase 2: grouping a market's links by
                              counterparty into SHORT/LONG, and validating a
                              trader's split of one — pure, no filesystem
@@ -80,7 +87,11 @@ tests/
                              heavily-exercised code in the app. Includes the
                              desk's single-day products (a day named beside
                              one is taken at its word; silence is warned
-                             about) and COB as another name for Malin
+                             about), COB as another name for Malin, and a
+                             string naming a quantity more than once
+                             ("150mw he9-12 and 100mw he13-14"), which is
+                             read strictly where one quantity is read
+                             loosely
     test_bilateral.py       pure: He-string collapsing, schedule compression,
                              price/int formatting, generated-SQL shape
                              (checked against a fake connection)
@@ -133,7 +144,12 @@ tests/
                               (the editor's seed must not move under it),
                               and the Paste MW popover
     test_paste_ui.py         paste -> fill -> build schedule, rejection,
-                              trade-date anchoring, WSPP forms
+                              trade-date anchoring, WSPP forms, and a
+                              one schedule block with a stepped profile
+                              when the string names several quantities
+                              (and a block each in the two cases that
+                              need one, down to what is left in session
+                              state when the next paste needs fewer)
     test_clear_button.py     the Clear button and the post-Add-Trade reset
     test_actions_ui.py       local Add Trade, Preview DB Insert (db),
                               past-date gate, the real-insert path (mocked)
@@ -173,9 +189,11 @@ tests/
                               validation gate, the overwrite gate, a failed
                               write. Also the path string: generated from the
                               link's two ends, shown where it can be copied,
+                              led by what the tag schedules ("60 HL; "),
                               replaced by what is pasted back (on that same
                               run, with the box left empty for the next
-                              round), and never behind the tag expander —
+                              round, and the schedule on the pasted line
+                              dropped), and never behind the tag expander —
                               which is shut on a link being drawn and open on
                               one clicked again. And "Lookup old tags": a
                               shared counterparty surfaces a route; who

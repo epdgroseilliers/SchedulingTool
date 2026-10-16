@@ -52,7 +52,11 @@ def _square(leg, links, related):
     )
     if leg.price:
         title += f"\n{leg.index} {leg.price}".rstrip()
-    if leg.trade_id is not None:
+    # Several when the trade's MW steps during the day: one square, one
+    # row per shape behind it, and the tooltip is where that shows.
+    if leg.trade_ids:
+        title += "\nId " + ", ".join(str(i) for i in leg.trade_ids)
+    elif leg.trade_id is not None:
         title += f"\nId {leg.trade_id}"
     if over:
         title += "\n⚠ over-allocated on HE " + ", ".join(str(h) for h in sorted(over))

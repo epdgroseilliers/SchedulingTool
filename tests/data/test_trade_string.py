@@ -650,3 +650,64 @@ def test_fuzzy_match_resolves_but_is_flagged():
     assert location.value == "PALOVERDE500"
     assert location.confidence == "fuzzy"
     assert any("worth checking" in w for w in r.warnings)
+
+
+class TestATradeThatStepsDuringTheDay:
+    """"epe sells 150mw he9-12 and 100mw he13-14" — one trade, two
+    quantities, two shapes. Each becomes a schedule block on the form and
+    so a row of its own in the database, which is the format the back
+    office reads; the board still shows it as one square."""
+
+    def test_both_quantities_are_read_with_their_own_shapes(self):
+        r = parse("epe sells 150mw he9-12 and 100mw he13-14 at FC $4")
+        assert r.ok, r.errors
+        assert [(seg["mw"], seg["shape"]) for seg in r.get("segments")] == [
+            (150.0, "9-12"), (100.0, "13-14")
+        ]
+
+    def test_the_rest_of_the_trade_is_read_exactly_as_before(self):
+        r = parse("epe sells 150mw he9-12 and 100mw he13-14 at FC $4")
+        assert r.get("counterparty") == "EPE"
+        assert r.get("direction") == "Buy"      # they sell, MAG buys
+        assert r.get("location") == "FOURCORNE345"
+        assert r.get("price") == 4.0
+
+    def test_the_first_segment_is_what_mw_and_shape_still_mean(self):
+        # Everything written before splits existed reads those two.
+        r = parse("epe sells 150mw he9-12 and 100mw he13-14 at FC $4")
+        assert (r.get("mw"), r.get("shape")) == (150.0, "9-12")
+
+    def test_nothing_of_the_split_is_left_over_to_be_ignored(self):
+        # The "and" joining them included — it is part of the segment,
+        # not a word the parser failed to place.
+        r = parse("epe sells 150mw he9-12 and 100mw he13-14 at FC $4")
+        assert not [w for w in r.warnings if w.startswith("Ignored")]
+
+    def test_three_of_them_and_the_named_shapes_too(self):
+        r = parse("epe sells 50mw hl and 25mw ll and 10mw he3-4 at pv $30")
+        assert r.ok, r.errors
+        assert [(seg["mw"], seg["shape"]) for seg in r.get("segments")] == [
+            (50.0, "HL"), (25.0, "LL"), (10.0, "3-4")
+        ]
+
+    def test_a_quantity_with_no_shape_of_its_own_is_refused(self):
+        # All or nothing, like every other refusal here: pairing them by
+        # position would be a guess that moves energy to the wrong hours.
+        r = parse("epe sells 150mw he9-12 and 100mw at FC $4")
+        assert not r.ok
+        assert "100mw" in r.errors[0]
+        assert r.get("segments") is None
+
+    def test_one_quantity_still_finds_its_shape_anywhere_in_the_string(self):
+        # The loose reading is kept for the ordinary case: there is only
+        # one quantity the shape could belong to.
+        r = parse("APS sells 12 MWS PV HL at $40")
+        assert r.ok, r.errors
+        assert [(seg["mw"], seg["shape"]) for seg in r.get("segments")] == [
+            (12.0, "HL")
+        ]
+
+    def test_and_keeps_the_spans_each_field_was_read_from(self):
+        r = parse("AZPS sells 10MW he9 PALOVERDE500 FIXED $5")
+        assert r.fields["mw"].source_text == "10MW"
+        assert r.fields["shape"].source_text == "he9"

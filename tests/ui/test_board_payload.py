@@ -48,6 +48,15 @@ class TestSquares:
         title = squares[0]["title"]
         assert "100 MW" in title and "1,600 MWh" in title and "Id 1" in title
 
+    def test_a_trade_written_as_several_rows_names_them_all(self):
+        # One square, one row per shape behind it — the tooltip is where
+        # a trader can see which rows the back office has
+        # (domain.matching.group_rows_into_legs).
+        split = leg("db:1", BUY)
+        split.key, split.trade_ids = "db:1+2", [1, 2]
+        squares, _, _ = build_payload([split], [], None, set())
+        assert "Id 1, 2" in squares[0]["title"]
+
     def test_the_bar_tracks_how_much_is_matched(self):
         links = [Link("L1", "db:1", "db:2", {h: 50.0 for h in range(7, 23)}, FLOW)]
         squares, _, _ = build_payload([BUY_A, SELL_B], links, None, set())

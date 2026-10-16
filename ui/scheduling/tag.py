@@ -59,7 +59,10 @@ from domain.tags import (
     TAG_STATES,
     lookupable_aref,
     market_end_fields,
+    path_string_line,
     reservation_covers,
+    schedule_prefix,
+    strip_schedule_prefix,
     split_difference,
     tag_errors,
 )
@@ -509,7 +512,10 @@ def _take_path_entry(tag, link_id):
     pasted = str(st.session_state.get(key) or "").strip()
     if not pasted:
         return False
-    tag["path_string"] = pasted
+    # Only the path half is kept. What comes back from the chat carries
+    # the schedule in front of it too, and this tag's own hours are the
+    # ones that belong there — see domain.tags.strip_schedule_prefix.
+    tag["path_string"] = strip_schedule_prefix(pasted)
     _bump(link_id, "path_entry")
     return True
 
@@ -574,6 +580,14 @@ def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_d
     two counterparties either side of MAG — and from there it is whatever the
     back-and-forth has produced. Nothing here parses it; it is displayed,
     copied and replaced.
+
+    In front of it, cut off by a semicolon, is what the tag schedules:
+    `50 HL; ??-ABEX-MAG001-SWPW-??`. A path says where the power goes
+    and nothing about how much or when, and the desk's own line has
+    carried both for as long as it has been a line. Only the path half is
+    stored — the schedule is the link's, and asking the trader to keep a
+    copy of it in a text box in step with the hour grid above is asking
+    for the two to disagree.
     """
     tag = ensure_tag(tag_key, buy_leg, sell_leg, mw_by_hour, flow_date)
     link_id = tag_key
@@ -583,7 +597,17 @@ def render_path_string(container, tag_key, buy_leg, sell_leg, mw_by_hour, flow_d
     # st.code rather than st.text: it carries Streamlit's own copy button,
     # it doesn't let the string be edited in place (the box below is the one
     # way to change it), and it wraps instead of truncating a long path.
-    container.code(tag.get("path_string") or "", language=None, wrap_lines=True)
+    #
+    # The schedule in front of it is worked out fresh every run rather than
+    # stored with the path: it is the hours *this tag* currently carries,
+    # and those move under it — a quick fill, a split, an hour typed into
+    # the grid. A copy taken a moment after any of those has to say what
+    # the tag now schedules, not what it did when the path was last pasted.
+    container.code(
+        path_string_line(schedule_prefix(mw_by_hour), tag.get("path_string")),
+        language=None,
+        wrap_lines=True,
+    )
 
     key = _widget_key(link_id, "path_entry")
     container.text_input(

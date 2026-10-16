@@ -34,6 +34,7 @@ def record(**over):
         "PorPod": "PALOVERDE500",
         "IsMonthly": False,
         "DAM_RT": "DAM",
+        "Communication": "ICE Chat",
         "MarketName": "AZPS",
     }
     base.update(over)

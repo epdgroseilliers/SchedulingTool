@@ -9,11 +9,12 @@ import pytest
 from domain.matching import BUY, SELL, TradeLeg
 from domain.tags import (
     DEFAULT_TAG_STATE,
-    MARKET_END_FIELDS,
     GENERATOR_PRODUCT,
-    PATH_UNKNOWN,
     LOAD_PRODUCT,
     MAG_PSE,
+    MARKET_END_FIELDS,
+    PATH_UNKNOWN,
+    TAG_STATES,
     blank_tag,
     carbon_copy_rows,
     clean_rows,
@@ -23,13 +24,16 @@ from domain.tags import (
     default_tag,
     folder_covers,
     lookupable_aref,
-    market_path_rows,
-    safe_name,
-    TAG_STATES,
     market_end_fields,
-    split_difference,
+    market_path_rows,
+    path_string_line,
+    safe_name,
+    schedule_prefix,
+    shape_name,
     sink_pse,
     source_pse,
+    split_difference,
+    strip_schedule_prefix,
     tag_errors,
     tag_filename,
     transmission_rows,
@@ -629,3 +633,89 @@ class TestWhichFolderADayBelongsIn:
         assert day_folder_name(
             [date(2026, 10, 31), date(2026, 11, 1)]
         ) == "31 Oct 2026"
+
+
+HL = {h: 50.0 for h in range(7, 23)}
+
+
+class TestWhatTheDeskCallsASetOfHours:
+    """shape_name — read off the hours, never off the WECC calendar: the
+    line this ends up on is about the hours the tag actually runs."""
+
+    def test_the_three_it_has_a_word_for(self):
+        assert shape_name(range(7, 23)) == "HL"
+        assert shape_name(list(range(1, 7)) + [23, 24]) == "LL"
+        assert shape_name(range(1, 25)) == "ATC"
+
+    def test_anything_else_is_written_out(self):
+        assert shape_name([9, 10, 11, 12]) == "HE9-12"
+        assert shape_name([18]) == "HE18"
+        assert shape_name([1, 2, 7, 8]) == "HE1-2,7-8"
+
+    def test_a_near_miss_is_not_rounded_up_to_one_of_them(self):
+        # HE7-21 is not HL, and saying it is would be a scheduler agreeing
+        # to an hour nobody traded.
+        assert shape_name(range(7, 22)) == "HE7-21"
+
+    def test_no_hours_at_all_says_nothing(self):
+        assert shape_name([]) == ""
+
+
+class TestTheScheduleInFrontOfAPathString:
+    """schedule_prefix — "50 HL", the half of the desk's chat line that
+    says how much power and when. No node: the path beside it names every
+    point the power passes through, so one here either repeats the path
+    or disagrees with it."""
+
+    def test_the_mw_then_the_hours(self):
+        assert schedule_prefix(HL) == "50 HL"
+
+    def test_mw_that_steps_during_the_day_is_given_as_a_range(self):
+        assert schedule_prefix({9: 150.0, 10: 150.0, 11: 100.0}) == "100-150 HE9-11"
+
+    def test_no_hours_means_no_prefix(self):
+        # How a tag of a fresh split starts: nothing to say yet.
+        assert schedule_prefix({}) == ""
+        assert schedule_prefix({7: 0.0}) == ""
+
+
+class TestTheLineThatGoesOnChat:
+    def test_the_schedule_a_semicolon_then_the_path(self):
+        assert path_string_line("50 HL", "??-A-MAG001-B-??") == (
+            "50 HL; ??-A-MAG001-B-??"
+        )
+
+    def test_a_path_with_nothing_to_say_about_hours_is_itself(self):
+        assert path_string_line("", "??-A-MAG001-B-??") == "??-A-MAG001-B-??"
+
+    def test_and_a_schedule_with_no_path_yet_is_itself(self):
+        assert path_string_line("50 HL", "") == "50 HL"
+
+
+class TestReadingAPastedLineBack:
+    """strip_schedule_prefix — the half of a pasted line that is about the
+    path. The other half is this tag's own hours, which the popup knows."""
+
+    def test_a_schedule_opening_with_the_mw_is_dropped(self):
+        assert strip_schedule_prefix(
+            "50NWS HLH;  AVRN.GEN(G) - MAG - BPA(s)"
+        ) == "AVRN.GEN(G) - MAG - BPA(s)"
+
+    def test_and_one_opening_with_the_hours_too(self):
+        # The desk writes it both ways — see the chat string in the TODO.
+        assert strip_schedule_prefix(
+            "HE1-6; Mead MAG (G @ SWPW) - MAG - EEMU"
+        ) == "Mead MAG (G @ SWPW) - MAG - EEMU"
+
+    def test_a_path_with_no_schedule_in_front_is_left_whole(self):
+        assert strip_schedule_prefix("??-A-MAG001(s)") == "??-A-MAG001(s)"
+
+    def test_a_long_head_is_a_path_and_not_a_schedule(self):
+        # A semicolon inside a path is not a thing to cut it at: a
+        # schedule is short, and that is what tells the two apart.
+        path = "4CORNERS.GEN(G) AVRNW bpatx( bpat.avrn > ??? ) - AVRNW; x"
+        assert strip_schedule_prefix(path) == path
+
+    def test_nothing_pasted_is_nothing_kept(self):
+        assert strip_schedule_prefix(None) == ""
+        assert strip_schedule_prefix("   ") == ""

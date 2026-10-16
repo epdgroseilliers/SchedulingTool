@@ -107,6 +107,46 @@ Saturday, one day). It is **silence** that gets a soft warning, because the
 form's own default window is the whole trading session and these cover one
 day of it.
 
+**A trade whose MW steps during the day** names a quantity more than once:
+`epe sells 150mw he9-12 and 100mw he13-14 at FC $4`. That fills **one
+schedule block whose profile steps** — the grid carries 150 over HE9-12
+and 100 over HE13-14 — which is what the trader used to add a second
+block for and then retype the hours into.
+
+One block, because a block's Shape and MW only ever *seed* its grid and
+the grid is what gets written: the database still gets the row per shape
+it always got, since `compress_schedule` splits a block by MW level on
+the way in. The Shape and MW boxes show the first quantity, the same
+thing `mw` and `shape` mean everywhere else; pressing Generate flattens
+the profile to them, which is what Generate has always meant.
+
+Two quantities do need blocks of their own in two cases
+(`domain.shapes.segments_share_one_block`). **One of them names HL, LL or
+ATC**: a block's Shape is what stores its row as that word rather than as
+the hours, and "HL" is not "7-22" — one asks the WECC calendar what kind
+of day it is and the other doesn't, so they are different trades on an
+off-peak day. Those are exactly the shapes whose hours can't be known
+without the calendar, so one test catches both facts, which is not a
+coincidence: a shape is written as a word because the word means
+something the hours don't. (1x16 and 1x8 name their hours outright and
+are stored as hours whatever block they are in.) **Or their hours
+overlap**, where there is no one profile to build and merging would
+overwrite one quantity's MW with the other's; kept apart, the duplicate
+check at submit names the hour.
+
+A string naming one quantity is read loosely — the shape can sit anywhere
+in it, because there is only one quantity it could belong to. **A string
+naming two is read strictly**: each one has to carry its own shape
+immediately after it, and a quantity without one is refused by name rather
+than paired by position, which is the kind of guess that silently moves a
+trade's energy to the wrong hours.
+
+The blocks go to the database as a row each. That is the format the back
+office reads and it is not changing for this — several of its processes
+read that table. It is one trade everywhere else, including on the
+scheduling board, which puts the rows back together into one square (see
+*The trade square*).
+
 A parse either fully succeeds (fills the whole form) or fully fails (fills
 nothing, shows the specific errors) — never partial. Fuzzy matches are
 filled but flagged as "worth checking," never presented as certain.
@@ -195,6 +235,37 @@ numbers for display, the reverse of what `compress_schedule()` does going
 in. This resolves the open question Phase 1 left about matching grain:
 it's **per trade, per flow date**, not per whole trade and not aggregated
 across counterparties/locations.
+
+**Per trade, not per row.** A trade whose MW steps during the day is
+written as a row per shape (`150mw he9-12` and `100mw he13-14` are two),
+and `BilateralTrades` carries no column saying the two were entered
+together — it is not going to get one either, since the back office has
+several readers of that table. So the rows are grouped by what they say:
+everything a trade carries except the hours and the MW, which are the two
+things a split is *about*
+(`domain.matching.group_rows_into_legs`).
+
+Saying the same thing is necessary and not sufficient. Two more tests, and
+both err toward leaving rows apart — two squares is where this started,
+where a wrong merge is a trade on the board that nobody entered:
+
+- **The hours don't overlap.** Two separate deals can share every grouped
+  field, and the desk enters them that way (the duplicate check allows it
+  as soon as the communication differs). Merging those would quietly
+  double a square's MW. The shapes of one trade never overlap, because the
+  form refuses a repeated (date, HE) across its own blocks.
+- **The ids run consecutively.** One Add Trade writes its rows one after
+  another in a single transaction, so they take consecutive identity
+  values. Measured over the desk's own book — 2,606 rows, July to
+  mid-October — this is what tells a day shaped by hand (24 consecutive
+  rows, one per hour, 24 different MW: ABEX into MATL does it most weeks)
+  from two deals that happen to match (25 MW to PACE at DJ on HE16 and on
+  HE17, 139 trades apart). Matching on the fields alone merged 76 groups;
+  with this, 47, and the ones it dropped are the ones with a gap of
+  dozens of ids in the middle.
+
+The square's tooltip names every row behind it, which is where a trader
+sees what the back office has.
 
 ### Linking
 
@@ -760,7 +831,35 @@ and takes the next round in the box below it. The box empties itself after
 each paste: this is a conversation, and a box still holding the last round's
 text is one you have to clear before you can use it again.
 
-**Nothing parses it yet.** It is displayed, copied and replaced — no more.
+**In front of it, the schedule.** The desk's line carries both halves, cut
+apart by a semicolon — `50 HL; ??-ABEX-MAG001-SWPW-??` — because a path
+says where the power goes and nothing about how much of it or when, and a
+scheduler needs both to agree to anything. The prefix is `{MW} {shape}`:
+the MW this tag carries (a range, `100-150`, when it steps) and the hours
+(`domain.tags.shape_name` — `HL`, `LL`, `ATC`, or `HE9-12`).
+
+**No node in it.** The path beside it already names every point the power
+passes through, starting with the one it leaves from, so a node in the
+prefix is either repeating the path or disagreeing with it.
+
+Only the path half is stored. The prefix is worked out fresh on every run
+from the hours the tag currently carries, because those move under it — a
+quick fill, a split, an hour typed into the grid — and a copy taken a
+moment after any of those has to say what the tag now schedules. Asking the
+trader to keep a second copy of the schedule in a text box in step with the
+hour grid above it is asking for the two to disagree.
+
+The hours name the hours, never the WECC calendar: an LL leg on an off-peak
+day runs all twenty-four, and twenty-four hours is what `ATC` says to the
+scheduler reading it. What comes back from the chat usually carries a
+schedule too (`HE1-6; Mead MAG ...`), and that half is dropped on the way
+in — this tag's own hours are the ones that belong there. A head is read
+as a schedule when it opens with a quantity or an hour *and* is short,
+which is what keeps a path that happens to carry a semicolon from being cut
+in half.
+
+**Nothing parses the path itself yet.** It is displayed, copied and
+replaced — no more.
 Reading a path string back into the tag fields needs the corpus of
 string-to-tag examples still to be assembled, and a wrong parse of a path is
 a tag that flows the wrong energy. Splitting one link's MW across several

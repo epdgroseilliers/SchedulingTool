@@ -24,7 +24,8 @@ CACHE_TTL_SECONDS = 60
 
 FLOW_DATE_SQL = text(
     "SELECT t.Id, t.TradeDate, t.StartDate, t.StopDate, t.He, t.MW, t.IsBuy, "
-    "t.price, t.PricingNode, t.PorPod, t.IsMonthly, t.DAM_RT, m.MarketName "
+    "t.price, t.PricingNode, t.PorPod, t.IsMonthly, t.DAM_RT, t.Communication, "
+    "m.MarketName "
     f"FROM {TRADES_TABLE} t "
     f"LEFT JOIN {MARKET_TABLE} m ON m.Id = t.MarketId "
     "WHERE t.StartDate <= :flow_date AND t.StopDate >= :flow_date "
@@ -59,6 +60,10 @@ def _as_row(record):
         "index": record.PricingNode,
         "is_monthly": bool(record.IsMonthly),
         "dam_rt": record.DAM_RT,
+        # Not shown anywhere — read so that two trades the desk entered
+        # separately *because* they were agreed separately don't come back
+        # as one square (domain.matching.group_rows_into_legs).
+        "communication": record.Communication,
     }
 
 

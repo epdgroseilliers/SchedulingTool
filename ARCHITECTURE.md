@@ -38,11 +38,15 @@ domain/       Pure business logic — no Streamlit import anywhere in this
                 data.bilateral.compress_schedule), the buy/sell link model,
                 and the open-position arithmetic over it. A link belongs to
                 one flow date (links_on): a leg's key doesn't carry one, so
-                without that a multi-day trade's days share one link.
+                without that a multi-day trade's days share one link. One
+                square per *trade*: a trade whose MW steps during the day
+                is several rows with no column saying so, and
+                group_rows_into_legs puts them back together.
   tags.py       Phase 3: the bilateral e-Tag a link turns into — its
                 fields, the PSE chain a link implies (generator, MAG,
                 load), that same chain written as the opening path string
-                for the scheduler chat (??-ABEX-MAG001-BPAT-??), the
+                for the scheduler chat (??-ABEX-MAG001-BPAT-??) with what
+                the tag schedules in front of it (50 HL; ...), the
                 whether a link's tags still add up to its own schedule,
                 what each market settles about the end of a link reaching
                 it (MARKET_END_FIELDS: the header piece, the Market cell and
@@ -173,7 +177,11 @@ data/         External state: the database and the WECC calendar. Nothing
                  itself, compliance folder creation.
   trade_string.py  The broker-string parser (deterministic, no LLM) —
                  pure and DB-free itself; ui.paste supplies it the option
-                 lists and the full-name lookup.
+                 lists and the full-name lookup. A string naming several
+                 quantities ("150mw he9-12 and 100mw he13-14") parses to
+                 one segment each; domain.shapes decides whether those
+                 are one block with a stepped profile (usually) or a
+                 block each.
   matching.py    The read side of BilateralTrades: what's on the book for
                  one flow date. Separate from bilateral.py's write side on
                  purpose — a read path has no business importing the insert.

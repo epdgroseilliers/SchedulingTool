@@ -8,6 +8,7 @@ import streamlit as st
 
 from data.bilateral import load_market_full_names
 from data.trade_string import parse_trade_string
+from domain.grid import dates_in_range
 from domain.options import (
     COUNTERPARTIES,
     DEFAULT_SPECIFIED_SOURCE,
@@ -17,8 +18,9 @@ from domain.options import (
     PARSED_COMMUNICATION,
     SPECIFIED_SOURCES,
 )
+from domain.shapes import combined_block_grid, segments_share_one_block
 from domain.trade import format_price
-from ui.session import block_date_defaults, dates_last_default_keys
+from ui.session import block_date_defaults, block_grid_key, dates_last_default_keys
 
 
 def apply_parsed_string(text):
@@ -67,29 +69,52 @@ def apply_parsed_string(text):
     # A flow range spanning a month or more (e.g. a quarter) implies IsMonthly.
     st.session_state.rare_fields["is_monthly"] = bool(parsed.get("is_monthly", False))
 
-    # A pasted string describes exactly one leg, so collapse back to one
-    # block and drop every existing grid — otherwise leftover blocks from a
-    # previous trade would silently ride along on this one.
-    st.session_state.block_ids = [0]
+    # A pasted string describes one trade, but a trade can run at one MW
+    # over some hours and another MW over others ("150mw he9-12 and 100mw
+    # he13-14"). That is **one schedule block with a profile that steps**:
+    # a block's Shape and MW only seed its grid, and the grid is what gets
+    # written. The database still gets its row per shape, because
+    # compress_schedule splits a block by MW level on the way in.
+    #
+    # Two quantities only need blocks of their own when one of them names
+    # HL, LL or ATC, or when their hours overlap — see
+    # domain.shapes.segments_share_one_block, which is where both reasons
+    # are written down.
+    segments = parsed.get("segments") or [
+        {"mw": parsed.get("mw"), "shape": parsed.get("shape")}
+    ]
+    one_block = segments_share_one_block(segments)
+    # What the Shape and MW boxes of each block show. On a stepped
+    # profile that is the first quantity, which is what `mw` and `shape`
+    # mean everywhere else too: the boxes are the grid's generator, not
+    # its record, and pressing Generate flattens the profile to them,
+    # which is what Generate has always meant.
+    blocks = segments[:1] if one_block else segments
     for key in [
         k for k in st.session_state
         if k.startswith(("block_grid_", "block_edits_", "grid_ver_", "block_editor_"))
     ]:
         del st.session_state[key]
-
-    st.session_state.shape_0 = parsed.get("shape")
-    mw = parsed.get("mw")
-    if float(mw) != int(mw):
-        summary["warnings"].append(
-            f"{mw:g} MW rounded to {round(mw)} — whole MW only."
-        )
-    st.session_state.mw_0 = int(round(mw))
+    # Every block the string names, and no others: a leftover block from a
+    # previous paste would silently ride along on this one.
+    #
+    # Dropping the keys of the blocks that go is only half Streamlit's job.
+    # It discards a *widget's* state on a run that doesn't render it, so
+    # Shape and MW clear themselves — but the default each block's dates
+    # were last given is plain state (ui.session.dates_last_default_keys),
+    # which is never collected and would be sitting there waiting for the
+    # next block to be given that number.
+    for bid in st.session_state.block_ids:
+        if bid < len(blocks):
+            continue
+        for name in (f"shape_{bid}", f"mw_{bid}", f"start_{bid}", f"end_{bid}",
+                     *dates_last_default_keys(bid)):
+            st.session_state.pop(name, None)
+    st.session_state.block_ids = list(range(len(blocks)))
+    st.session_state.next_block_id = len(blocks)
 
     start = parsed.get("start_date")
-    if start:
-        st.session_state.start_0 = start
-        st.session_state.end_0 = parsed.get("end_date", start)
-    else:
+    if not start:
         # No flow date in the string: recompute the same IsDAM/calendar-
         # driven default a fresh block would get, and set it directly.
         # Popping the keys and relying on render_schedule_section's own
@@ -99,21 +124,49 @@ def apply_parsed_string(text):
         # over by this point, so that fallback silently leaves the
         # displayed dates stuck at whatever they last were.
         is_dam = st.session_state.get("is_dam", True)
-        default_start, default_end = block_date_defaults(trade_date, is_dam)
-        st.session_state.start_0 = default_start
-        st.session_state.end_0 = default_end
-        last_start_key, last_end_key = dates_last_default_keys(0)
-        st.session_state[last_start_key] = default_start
-        st.session_state[last_end_key] = default_end
+        start, end = block_date_defaults(trade_date, is_dam)
+        defaulted = True
+    else:
+        end = parsed.get("end_date", start)
+        defaulted = False
+
+    for bid, segment in enumerate(blocks):
+        st.session_state[f"shape_{bid}"] = segment["shape"]
+        mw = segment["mw"]
+        if float(mw) != int(mw):
+            summary["warnings"].append(
+                f"{mw:g} MW rounded to {round(mw)} — whole MW only."
+            )
+        st.session_state[f"mw_{bid}"] = int(round(mw))
+        st.session_state[f"start_{bid}"] = start
+        st.session_state[f"end_{bid}"] = end
+        if defaulted:
+            last_start_key, last_end_key = dates_last_default_keys(bid)
+            st.session_state[last_start_key] = start
+            st.session_state[last_end_key] = end
+
+    if one_block and len(segments) > 1:
+        # The one block's grid, built here rather than left to Shape/MW,
+        # which between them can only describe the first quantity.
+        # ui.schedule.get_block_grid hands a stored grid straight back
+        # when its dates are the block's, so this is the seed the editor
+        # opens on.
+        block_dates = dates_in_range(start, end)
+        grid, error = combined_block_grid(start, end, block_dates, segments)
+        if error:
+            summary["warnings"].append(error)
+        else:
+            st.session_state[block_grid_key(0)] = grid
 
     price_text = format_price(parsed.get("index"), float(parsed.get("price")))
     summary["lines"] = [
         f"{parsed.get('direction')} {parsed.get('counterparty')}",
-        f"{parsed.get('mw'):g} MW",
-        str(parsed.get("shape")),
+        # One entry per block, so a split schedule is visibly a split one
+        # before the trader scrolls down to the blocks themselves.
+        " + ".join(f"{seg['mw']:g} MW {seg['shape']}" for seg in segments),
         f"@ {parsed.get('location')}",
         price_text,
-        f"flow {start}" if start else "flow: default",
+        f"flow {start}" if not defaulted else "flow: default",
         f"WSPP {st.session_state.wspp_contract}",
     ]
     if st.session_state.specified_source:

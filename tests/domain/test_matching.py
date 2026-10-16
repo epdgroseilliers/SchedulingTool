@@ -161,6 +161,99 @@ class TestLegsFromDbRows:
         assert len(warnings) == 1 and "7" in warnings[0]
 
 
+class TestATradeWrittenAsSeveralRows:
+    """"150mw he9-12 and 100mw he13-14" is one trade the desk entered as two
+    rows, because that is the format the back office's readers expect. On
+    the board it is one square — see group_rows_into_legs."""
+
+    def row(self, **over):
+        base = {
+            "start_date": FLOW, "stop_date": FLOW, "he": "9-12", "mw": 150,
+            "direction": BUY, "pse": "EPE", "por_pod": "FOURCORNE345",
+            "price": "4", "index": "", "trade_date": date(2026, 9, 17),
+            "is_monthly": False, "dam_rt": "DAM", "communication": "ICE Chat",
+            "trade_id": 1,
+        }
+        base.update(over)
+        return base
+
+    def split(self):
+        return [self.row(), self.row(he="13-14", mw=100, trade_id=2)]
+
+    def test_the_two_rows_are_one_square(self):
+        legs, _ = legs_from_db_rows(self.split(), FLOW, True)
+        assert len(legs) == 1
+
+    def test_it_carries_both_rows_hours_at_their_own_mw(self):
+        (lg,), _ = legs_from_db_rows(self.split(), FLOW, True)
+        assert lg.mw_by_hour == {
+            9: 150.0, 10: 150.0, 11: 150.0, 12: 150.0, 13: 100.0, 14: 100.0
+        }
+        assert lg.he_label == "9-14"
+        assert lg.mw_label == "100–150 MW"
+
+    def test_its_key_names_every_row_behind_it(self):
+        # Stable across reruns and across the days the trade flows, which
+        # is what links are hung off.
+        (lg,), _ = legs_from_db_rows(self.split(), FLOW, True)
+        assert lg.key == "db:1+2"
+        assert lg.trade_ids == [1, 2]
+
+    def test_a_lone_row_is_the_square_it_always_was(self):
+        (lg,), _ = legs_from_db_rows([self.row()], FLOW, True)
+        assert lg.key == "db:1"
+        assert lg.trade_ids == [1]
+
+    def test_two_deals_that_differ_in_anything_stay_apart(self):
+        for field, value in (
+            ("pse", "BPAT"), ("por_pod", "MIDC"), ("price", "40"),
+            ("direction", SELL), ("trade_date", date(2026, 9, 16)),
+            ("communication", "ICE"), ("stop_date", date(2026, 9, 19)),
+        ):
+            rows = [self.row(), self.row(he="13-14", trade_id=2, **{field: value})]
+            legs, _ = legs_from_db_rows(rows, FLOW, True)
+            assert len(legs) == 2, field
+
+    def test_two_deals_that_differ_in_nothing_but_overlap_stay_apart(self):
+        # The desk does enter these — the duplicate check allows a repeat
+        # as soon as the communication differs — and folding them into one
+        # square would quietly double its MW. The shapes of one trade
+        # never overlap (ui.actions._flatten_schedule refuses it).
+        rows = [self.row(), self.row(trade_id=2)]
+        legs, _ = legs_from_db_rows(rows, FLOW, True)
+        assert [lg.key for lg in legs] == ["db:1", "db:2"]
+
+    def test_rows_entered_an_hour_apart_are_two_deals(self):
+        # One Add Trade writes its rows one after another, so they take
+        # consecutive ids. These two agree on everything the desk records
+        # — 25 MW to PACE at DJ, HE16 and HE17, same price, same chat
+        # — and 139 trades went in between them, which is the nearest
+        # thing the table has to saying they were agreed separately.
+        rows = [
+            self.row(he="16", trade_id=10845),
+            self.row(he="17", trade_id=10984),
+        ]
+        legs, _ = legs_from_db_rows(rows, FLOW, True)
+        assert [lg.key for lg in legs] == ["db:10845", "db:10984"]
+
+    def test_but_a_whole_day_shaped_by_hand_is_still_one(self):
+        # The desk does write a day an hour at a time — 24 rows, one per
+        # hour, at 24 different MW. Consecutive, so one square.
+        rows = [
+            self.row(he=str(h), mw=h, trade_id=100 + h) for h in range(1, 25)
+        ]
+        (lg,), _ = legs_from_db_rows(rows, FLOW, True)
+        assert lg.he_label == "1-24"
+        assert len(lg.trade_ids) == 24
+
+    def test_a_row_that_does_not_flow_today_takes_nothing_with_it(self):
+        # An HL row flows no hours on an off-peak day; the rest of the
+        # trade is still a square.
+        rows = [self.row(), self.row(he="HL", trade_id=2)]
+        legs, _ = legs_from_db_rows(rows, FLOW, False)
+        assert [lg.key for lg in legs] == ["db:1"]
+
+
 class TestLegsFromSessionTrades:
     def test_an_hourly_trade_becomes_this_dates_leg(self):
         trades = [{

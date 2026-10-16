@@ -364,3 +364,87 @@ class TestPasteThenAddTrade:
         assert sorted({he for _, he, _ in t["schedule"]}) == [18, 19, 20, 21]
         assert {mw for _, _, mw in t["schedule"]} == {100.0}
         assert t["db_trade_ids"] == []  # Input in DB was never ticked
+
+
+class TestATradeThatStepsDuringTheDay:
+    """"epe sells 150mw he9-12 and 100mw he13-14" is one block whose
+    profile steps, not two blocks. The trader used to have to add the
+    second block and retype its hours into the grid by hand."""
+
+    STRING = "epe sells 150mw he9-12 and 100mw he13-14 at FC $4"
+
+    def _pasted(self, text=None):
+        at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+        _paste(at, text or self.STRING)
+        assert not at.exception, [e.value for e in at.exception]
+        assert not at.error, [e.value for e in at.error]
+        return at
+
+    def test_one_block(self):
+        ss = self._pasted().session_state
+        assert ss["block_ids"] == [0]
+        assert ss["next_block_id"] == 1
+
+    def test_its_grid_holds_both_quantities_on_their_own_hours(self):
+        at = self._pasted()
+        row = at.dataframe[0].value.iloc[0]
+        assert [h for h in range(1, 25) if row[str(h)] > 0] == [9, 10, 11, 12, 13, 14]
+        assert (row["9"], row["13"]) == (150.0, 100.0)
+
+    def test_on_every_day_of_the_range(self):
+        at = self._pasted()
+        grid = at.dataframe[0].value
+        assert len(grid) >= 1
+        for _, row in grid.iterrows():
+            assert (row["9"], row["13"]) == (150.0, 100.0)
+
+    def test_the_boxes_show_the_first_quantity(self):
+        # They are the grid's generator, not its record — pressing
+        # Generate flattens the profile, which is what Generate means.
+        ss = self._pasted().session_state
+        assert (ss["shape_0"], ss["mw_0"]) == ("9-12", 150)
+
+    def test_both_quantities_are_in_what_it_says_it_understood(self):
+        at = self._pasted()
+        line = " ".join(c.value for c in at.caption)
+        assert "150 MW 9-12" in line and "100 MW 13-14" in line
+
+    def test_a_named_shape_still_gets_a_block_of_its_own(self):
+        # A block's Shape is what stores the row as the word rather than
+        # the hours, and "HL" is not "7-22" — one asks the calendar what
+        # kind of day it is and the other doesn't.
+        ss = self._pasted("epe sells 50mw hl and 25mw ll at FC $4").session_state
+        assert ss["block_ids"] == [0, 1]
+        assert (ss["shape_0"], ss["mw_0"]) == ("HL", 50)
+        assert (ss["shape_1"], ss["mw_1"]) == ("LL", 25)
+
+    def test_and_so_do_quantities_whose_hours_overlap(self):
+        # There is no one profile to build; kept apart, the duplicate
+        # check at submit names the hour.
+        ss = self._pasted("epe sells 50mw he1-6 and 25mw he5-8 at FC $4").session_state
+        assert ss["block_ids"] == [0, 1]
+
+    def test_pasting_a_simpler_string_after_a_split_one_clears_it(self):
+        at = self._pasted("epe sells 50mw hl and 25mw ll at FC $4")
+        _paste(at, "BPA sells 100MW LL at JD for midc+3")
+        ss = at.session_state
+        assert ss["block_ids"] == [0]
+        assert (ss["shape_0"], ss["mw_0"]) == ("LL", 100)
+        assert _ss_get(at, "shape_1") is None
+        assert _ss_get(at, "mw_1") is None
+
+    def test_and_nothing_of_it_is_left_waiting_for_the_next_block(self):
+        # Streamlit collects the widgets of a block that stops rendering,
+        # but not the dates it remembers beside them — those are plain
+        # state, and a stale one would move the next block 1's dates
+        # under it.
+        at = self._pasted("epe sells 50mw hl and 25mw ll at FC $4")
+        _paste(at, "BPA sells 100MW LL at JD for midc+3")
+        assert not [k for k in at.session_state.filtered_state if k.endswith("_1")]
+
+    def test_a_later_paste_does_not_leave_the_stepped_grid_behind(self):
+        at = self._pasted()
+        _paste(at, "BPA sells 100MW he1-6 at JD for midc+3")
+        row = at.dataframe[0].value.iloc[0]
+        assert [h for h in range(1, 25) if row[str(h)] > 0] == [1, 2, 3, 4, 5, 6]
+        assert row["1"] == 100.0

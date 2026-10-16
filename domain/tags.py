@@ -16,6 +16,8 @@ than from a blank workbook.
 
 import re
 
+from data.bilateral import hours_to_he_string
+
 #: MAG's own PSE code, which appears in every market path in the desk's own
 #: files — as the generator when MAG sources from a market, as the load when
 #: it sinks into one, and in the middle when both ends are counterparties.
@@ -202,6 +204,90 @@ def default_path_string(buy_leg, sell_leg, pse_for=None):
     if tail is None and chain:
         chain[-1] += SINK_MARK
     return "-".join([p for p in (head, *chain, tail) if p])
+
+
+#: Hour sets the desk names instead of numbering, and what it calls them.
+#:
+#: Read off the hours themselves and never off the WECC calendar, unlike
+#: the He column of a trade (domain.matching.expand_he). This is the line
+#: that goes out on chat, and what it is about is the hours this tag
+#: actually runs: an LL leg on an off-peak day runs all twenty-four, and
+#: twenty-four hours is what "ATC" says to the scheduler reading it.
+SHAPE_NAMES = (
+    (frozenset(range(1, 25)), "ATC"),
+    (frozenset(range(7, 23)), "HL"),
+    (frozenset(list(range(1, 7)) + [23, 24]), "LL"),
+)
+
+
+def shape_name(hours):
+    """"HL", "LL", "ATC", or "HE9-12" for anything the desk has no word
+    for. Empty for no hours at all."""
+    hours = frozenset(int(h) for h in hours)
+    if not hours:
+        return ""
+    for known, name in SHAPE_NAMES:
+        if hours == known:
+            return name
+    return "HE" + hours_to_he_string(sorted(hours))
+
+
+def schedule_prefix(mw_by_hour):
+    """What this tag schedules, the way the desk writes it: `50 HL`.
+
+    Goes in front of the path string and is cut off from it by a
+    semicolon, because a path says where the power goes and nothing about
+    how much of it or when — and the scheduler on the other end needs
+    both to agree to anything.
+
+    **No node.** The path itself names every point the power passes
+    through, starting with the one it leaves from, so a node here is
+    either repeating the path or disagreeing with it.
+
+    Empty when there are no hours yet, which is how a tag of a fresh
+    split starts: there is nothing to say about a schedule nobody has
+    filled in.
+    """
+    hours = {int(h): float(mw) for h, mw in (mw_by_hour or {}).items() if mw}
+    if not hours:
+        return ""
+    low, high = min(hours.values()), max(hours.values())
+    mw = f"{low:g}" if low == high else f"{low:g}-{high:g}"
+    return f"{mw} {shape_name(hours)}"
+
+
+def path_string_line(prefix, path):
+    """The one line that goes on chat: the schedule, a semicolon, the path."""
+    path = (path or "").strip()
+    if not prefix:
+        return path
+    return f"{prefix}; {path}" if path else prefix
+
+
+#: A schedule in front of a path. Both ways the desk opens one — with
+#: the MW ("50NWS HLH; ...") or with the hours ("HE1-6; Mead MAG ...") —
+#: and short, which is the part that keeps a path with a semicolon in it
+#: from being mistaken for one.
+_SCHEDULE_PREFIX = re.compile(r"^\s*(?:\d|he\s*\d)[^;]{0,40};", re.I)
+
+
+def strip_schedule_prefix(text):
+    """What a pasted line says about the *path*, with any schedule in
+    front of it dropped.
+
+    The desk's own line carries both, so what comes back from the chat
+    usually does too — and keeping it would put the other scheduler's
+    idea of the schedule in front of ours on the next round, where this
+    tag's own hours belong.
+
+    A head is read as a schedule when it **opens with a quantity or an
+    hour** and is short — the two ways the desk writes one, and the
+    length is what keeps a path that happens to carry a semicolon from
+    being cut in half. Anything else is left whole.
+    """
+    text = (text or "").strip()
+    m = _SCHEDULE_PREFIX.match(text)
+    return text[m.end():].strip() if m else text
 
 
 def default_tag(buy_leg, sell_leg, mw_by_hour, flow_date, pse_for=None):

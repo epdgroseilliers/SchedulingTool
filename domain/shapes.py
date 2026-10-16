@@ -8,7 +8,7 @@ import re
 from datetime import timedelta
 
 from data.calendar import is_peak_map
-from domain.grid import make_block_grid
+from domain.grid import HOURS, as_date, make_block_grid
 
 SHAPE_ALIASES = {
     "HL": "on_peak",
@@ -187,6 +187,93 @@ def build_schedule(start_date, end_date, kind, mw, custom_start_he=None, custom_
         d += timedelta(days=1)
 
     return hours_by_date, excluded_dates, missing_dates
+
+
+def _hours_without_the_calendar(shape):
+    """The hours a shape covers when it covers the same ones every day,
+    or None when only the WECC calendar can say (HL, LL, ATC).
+
+    1x16 and 1x8 are in the first group: naming their hours outright,
+    weekend days included, is the whole reason the desk writes them.
+    """
+    kind, start_he, end_he = parse_shape(shape)
+    if kind in FIXED_SHAPE_HOURS:
+        return set(FIXED_SHAPE_HOURS[kind])
+    if kind == "custom":
+        return set(range(start_he, end_he + 1))
+    return None
+
+
+def segments_share_one_block(segments):
+    """Whether a string's quantities belong in one schedule block.
+
+    Normally yes, and that is the point: a block's Shape and MW only ever
+    *seed* its grid, and the grid is what gets written, so "150mw he9-12
+    and 100mw he13-14" is one block whose profile steps rather than two
+    blocks. The database still gets the row per shape it has always got
+    — data.bilateral.compress_schedule splits a block by MW level
+    before writing it, so the rows are the same either way.
+
+    Two quantities need blocks of their own:
+
+    **One of them names HL, LL or ATC.** A block's Shape is what lets its
+    row be stored as that word rather than as the hours
+    (data.bilateral.he_for_hours), and "HL" is not "7-22": one asks the
+    calendar what kind of day it is and the other doesn't, so they are
+    different trades on an off-peak day. Merging would quietly rewrite
+    the word as hours.
+
+    Those are exactly the shapes whose hours this can't name without the
+    calendar, so one test catches both facts — which is not a
+    coincidence: a shape is written as a word in the He column because
+    the word means something the hours don't. (1x16 and 1x8 name their
+    hours outright and are stored as hours whatever block they are in,
+    so they lose nothing by sharing one.)
+
+    **Their hours overlap.** Then there is no single profile to build:
+    one would overwrite the other's MW without saying so. Kept apart,
+    the duplicate check at submit names the hour
+    (ui.actions._flatten_schedule).
+    """
+    if len(segments) < 2:
+        return True          # nothing to share it with
+    seen = set()
+    for segment in segments:
+        try:
+            hours = _hours_without_the_calendar(segment["shape"])
+        except ValueError:
+            return False
+        if hours is None or hours & seen:
+            return False
+        seen |= hours
+    return True
+
+
+def combined_block_grid(start_date, end_date, block_dates, segments):
+    """One grid holding every segment's own hours at its own MW.
+
+    For a block that came off a broker string naming a quantity more than
+    once. Only ever called on segments segments_share_one_block has
+    passed, so the hours don't overlap and nothing here needs the
+    calendar — but it goes through generate_block_grid all the same, so
+    a block built this way and a block built by Generate are built by the
+    same code.
+
+    Returns (grid, error), the same way generate_block_grid does.
+    """
+    mw_by_date = {}
+    for segment in segments:
+        grid, _, _, error = generate_block_grid(
+            start_date, end_date, block_dates, segment["shape"], segment["mw"]
+        )
+        if error:
+            return None, error
+        for _, row in grid.iterrows():
+            day = mw_by_date.setdefault(as_date(row["Date"]), {})
+            for he in HOURS:
+                if row[str(he)]:
+                    day[he] = float(row[str(he)])
+    return make_block_grid(block_dates, mw_by_date), None
 
 
 def generate_block_grid(start_date, end_date, block_dates, shape, mw):

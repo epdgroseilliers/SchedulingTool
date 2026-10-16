@@ -193,11 +193,20 @@ def _numbers(at, link_id="L1"):
 OPENING_PATH = "??-APS01-MAG001-BPAP01-??"
 
 #: One round later, as a scheduler would paste it back — the desk's own
-#: wording, from the TODO.
+#: wording, from the TODO. Note the "HE1-6;": the line carries the
+#: schedule in front of the path, which is the half the popup works out
+#: for itself (CHAT_PATH_BODY).
 CHAT_PATH = (
     "HE1-6; Mead MAG (G @ SWPW) (WALC tx PPK>MEAD, 7f 110704717) - MAG - "
     "EEMU - TNSK - MGM sink"
 )
+
+#: The same line with its schedule taken off: what gets stored.
+CHAT_PATH_BODY = CHAT_PATH.split("; ", 1)[1]
+
+#: What the popup puts in front of a path on the link these tests draw:
+#: 60 MW every hour of HE7-22.
+SCHEDULE_PREFIX = "60 HL"
 
 
 def _path_entry_key(at, link_id="L1"):
@@ -215,8 +224,8 @@ def _paste_path(at, text, link_id="L1"):
 
 def _shown_path(at):
     """What the popup is displaying as the latest path — the copyable block,
-    not the box."""
-    return [block.value for block in at.code]
+    not the box. One string: the schedule, a semicolon, the path."""
+    return "\n".join(block.value for block in at.code)
 
 
 def _tag_expander(at):
@@ -541,13 +550,13 @@ class TestThePathString:
 
     def test_pasting_the_next_round_replaces_it(self):
         at = _paste_path(_tagging(), CHAT_PATH)
-        assert _tag(at)["path_string"] == CHAT_PATH
+        assert _tag(at)["path_string"] == CHAT_PATH_BODY
 
     def test_and_the_display_follows_on_that_same_run(self):
         # The entry is read before the display is drawn, so a paste shows up
         # without costing a rerun inside the dialog.
         at = _paste_path(_tagging(), CHAT_PATH)
-        assert CHAT_PATH in _shown_path(at)
+        assert CHAT_PATH_BODY in _shown_path(at)
         assert OPENING_PATH not in _shown_path(at)
 
     def test_the_box_is_empty_again_for_the_round_after(self):
@@ -557,23 +566,73 @@ class TestThePathString:
     def test_an_empty_box_leaves_the_path_where_it_was(self):
         at = _paste_path(_tagging(), CHAT_PATH)
         at = _paste_path(at, "   ")
-        assert _tag(at)["path_string"] == CHAT_PATH
+        assert _tag(at)["path_string"] == CHAT_PATH_BODY
 
     def test_it_is_still_there_when_the_link_is_opened_again(self):
         at = _paste_path(_tagging(), CHAT_PATH)
         at = _click(at, "Cancel")
         at = _emit(_in_dialog(at), {"type": "link_click", "link_id": "L1"})
-        assert CHAT_PATH in _shown_path(_in_dialog(at).run())
+        assert CHAT_PATH_BODY in _shown_path(_in_dialog(at).run())
 
     def test_what_was_pasted_before_the_link_existed_moves_onto_it(self):
         at = _paste_path(_drawing(), CHAT_PATH, link_id=PENDING_TAG)
         at = _click(at, "Create link")
-        assert _tag(at)["path_string"] == CHAT_PATH
+        assert _tag(at)["path_string"] == CHAT_PATH_BODY
 
     def test_a_link_into_a_market_ends_at_mag_rather_than_a_placeholder(self):
         # Selling into SWPW *is* MAG sinking it — there's nobody past that.
         at = _tagging(trades=(BUY_LEG,), frm="session:0", market="SWPW")
         assert "??-APS01-MAG001(s)" in _shown_path(at)
+
+
+class TestTheScheduleInFrontOfThePath:
+    """`50MEAD HL; ??-A-MAG001-B-??` — what the tag schedules, cut off
+    from where it goes by a semicolon, the way the desk writes the line."""
+
+    def test_the_copied_line_leads_with_what_this_tag_schedules(self):
+        assert _shown_path(_tagging()).startswith(f"{SCHEDULE_PREFIX}; ")
+
+    def test_and_then_the_path(self):
+        assert _shown_path(_tagging()) == f"{SCHEDULE_PREFIX}; {OPENING_PATH}"
+
+    def test_it_names_no_node_of_its_own(self):
+        # Buy from AZPS at PALOVERDE500, sell to BPAT at MIDC — the path
+        # beside it already names every point the power passes through.
+        line = _shown_path(_tagging())
+        assert "MIDC" not in line and "PALOVERDE" not in line
+
+    def _relink(self, at, mw_by_hour):
+        """Re-allocate the link and open it again — the same idiom as
+        TestWhatTheLinkFillsIn, which is where the hours come from."""
+        at.session_state["mv_links"][0].mw_by_hour = dict(mw_by_hour)
+        at = _emit(_in_dialog(at), {"type": "link_click", "link_id": "L1"})
+        return _in_dialog(let_go_of_closed_widgets(at)).run()
+
+    def test_it_follows_the_hours_rather_than_being_stored_with_the_path(self):
+        # Half the hours taken off the link: the line says so the next time
+        # it is drawn, and the path itself is untouched.
+        at = _tagging()
+        before = _tag(at)["path_string"]
+        at = self._relink(at, {h: 60.0 for h in range(7, 15)})
+        assert _shown_path(at).startswith("60 HE7-14; ")
+        assert _tag(at)["path_string"] == before
+
+    def test_no_hours_yet_means_no_schedule_to_say(self):
+        at = self._relink(_tagging(), {})
+        assert _shown_path(at) == OPENING_PATH
+
+    def test_a_pasted_line_keeps_its_path_and_loses_its_schedule(self):
+        # The desk's own line carries both halves, so what comes back from
+        # the chat does too — and the half that belongs to this tag is the
+        # one the popup works out for itself.
+        at = _paste_path(_tagging(), CHAT_PATH)
+        assert _tag(at)["path_string"] == CHAT_PATH_BODY
+        assert "HE1-6;" not in _shown_path(at)
+        assert _shown_path(at).startswith(f"{SCHEDULE_PREFIX}; ")
+
+    def test_a_pasted_path_with_no_schedule_is_left_whole(self):
+        at = _paste_path(_tagging(), "A - B; C - MAG(s)")
+        assert _tag(at)["path_string"] == "A - B; C - MAG(s)"
 
 
 class TestWhereTheTagFieldsSit:

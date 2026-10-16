@@ -13,7 +13,9 @@ Two shapes of thing live here:
 to one flow date* — the reverse of what `data.bilateral.compress_schedule()`
 does on the way in. A trade spanning three days is three legs, one per day,
 each with that day's own hours (an `'HL'` row simply doesn't flow on an
-off-peak day, and produces no leg at all).
+off-peak day, and produces no leg at all). A trade whose MW steps during
+the day is several *rows* on one day, and those come back together as one
+leg — see group_rows_into_legs.
 
 **Links** — a buy key paired with a sell key plus the MW-per-hour allocated
 to that pairing. Deliberately a standalone record rather than a field on
@@ -22,7 +24,7 @@ several sells and vice versa. A leg's "open" position is whatever its own
 schedule still has left after every link touching it is subtracted.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from data.bilateral import hours_to_he_string
 from domain.shapes import parse_shape
@@ -108,6 +110,10 @@ class TradeLeg:
     price: str = ""
     index: str = ""
     trade_id: object = None
+    #: Every `BilateralTrades` row this square stands for, in query order.
+    #: More than one when a trade runs at different MW over different
+    #: hours — see legs_from_db_rows.
+    trade_ids: list = field(default_factory=list)
     start_date: object = None
     stop_date: object = None
 
@@ -168,19 +174,117 @@ def leg_from_row(row, flow_date, is_peak, key, source):
         price=row.get("price") or "",
         index=row.get("index") or "",
         trade_id=row.get("trade_id"),
+        trade_ids=[row["trade_id"]] if row.get("trade_id") is not None else [],
         start_date=row["start_date"],
         stop_date=row["stop_date"],
     )
 
 
+#: What rows of one trade have in common. Everything a trade carries, in
+#: other words, except the two things a shape split is *about*: the hours
+#: and the MW.
+#:
+#: `BilateralTrades` has no column saying which rows were entered
+#: together, and it is not going to get one — the back office has
+#: several readers of that table and its format is theirs, not ours. So
+#: the rows are grouped by what they say rather than by an id they don't
+#: carry.
+_TRADE_GROUP_FIELDS = (
+    "direction", "pse", "por_pod", "price", "index", "trade_date",
+    "start_date", "stop_date", "is_monthly", "dam_rt", "communication",
+)
+
+
+def _trade_group_key(row):
+    return tuple(row.get(name) for name in _TRADE_GROUP_FIELDS)
+
+
+def _merged_leg(legs):
+    """Several rows of one trade as the one square they are.
+
+    The key names every row it stands for (`db:412+413`), which keeps it
+    stable across reruns and across the days the trade flows — the same
+    property `db:412` had, and what links are hung off.
+    """
+    if len(legs) == 1:
+        return legs[0]
+    mw_by_hour = {}
+    for leg in legs:
+        mw_by_hour.update(leg.mw_by_hour)
+    ids = [leg.trade_id for leg in legs if leg.trade_id is not None]
+    return replace(
+        legs[0],
+        key="db:" + "+".join(str(i) for i in ids),
+        mw_by_hour=dict(sorted(mw_by_hour.items())),
+        trade_ids=ids,
+    )
+
+
+def _one_trade(group):
+    """Whether rows that say the same thing really were entered together.
+
+    Two tests, and the group has to pass both.
+
+    **The hours don't overlap.** Two genuinely separate deals can share
+    every grouped field — same counterparty, point, price and day — and
+    the desk enters them that way; the duplicate check allows it as soon
+    as the communication differs. Merging those would quietly double a
+    square's MW. The shapes of one trade never overlap, because the form
+    refuses a repeated (date, HE) across its own blocks
+    (ui.actions._flatten_schedule).
+
+    **The ids run consecutively.** One Add Trade writes its rows one
+    after another in a single transaction, so they take consecutive
+    identity values: it is the nearest thing the table has to saying
+    these were entered together. Two deals agreed an hour apart are not
+    adjacent, and measured over the desk's own book this is what tells
+    "one trade shaped by hand" (a whole day written an hour at a time,
+    consecutive ids) from "two deals that happen to match" (the same
+    counterparty and point twice in an afternoon). It errs toward leaving
+    them apart: a trade whose rows were interleaved with somebody else's
+    insert is two squares, which is where this started, where a wrong
+    merge is a trade on the board that nobody entered.
+    """
+    hours = [set(leg.mw_by_hour) for leg in group]
+    if any(a & b for i, a in enumerate(hours) for b in hours[i + 1:]):
+        return False
+    ids = sorted(leg.trade_id for leg in group if leg.trade_id is not None)
+    if len(ids) != len(group):
+        return False
+    return ids == list(range(ids[0], ids[0] + len(ids)))
+
+
+def group_rows_into_legs(built):
+    """One square per trade, from one leg per row. `built` is [(row, leg)]
+    in query order, and the order of the first row of each group is kept.
+
+    A trade that runs at one MW over some hours and another over others is
+    written as a row per shape — "150mw he9-12 and 100mw he13-14" is two
+    rows — and until this it was two squares, which is two of everything:
+    two links to draw, two tags, twice the board. It is one trade to
+    everyone but the back office, so it is one square.
+
+    Saying the same thing is necessary and not sufficient — see
+    _one_trade for the two further tests, and for why both of them err
+    toward leaving rows apart.
+    """
+    groups = {}
+    for row, leg in built:
+        groups.setdefault(_trade_group_key(row), []).append(leg)
+    legs = []
+    for group in groups.values():
+        legs.extend([_merged_leg(group)] if _one_trade(group) else group)
+    return legs
+
+
 def legs_from_db_rows(rows, flow_date, is_peak):
     """(legs, warnings) for every BilateralTrades row covering `flow_date`.
 
-    One square per *row*, not per trade: the table has no column grouping
-    the rows of one multi-row trade, so the row is the finest grain that can
-    be identified stably enough to hang a link off.
+    One square per *trade*, which is usually one row and is several when a
+    trade's MW steps during the day — see group_rows_into_legs for how
+    those are told apart with no column saying so.
     """
-    legs, warnings = [], []
+    built, warnings = [], []
     for row in rows:
         try:
             leg = leg_from_row(
@@ -190,8 +294,8 @@ def legs_from_db_rows(rows, flow_date, is_peak):
             warnings.append(f"Trade {row.get('trade_id', '?')}: {e}")
             continue
         if leg is not None:
-            legs.append(leg)
-    return legs, warnings
+            built.append((row, leg))
+    return group_rows_into_legs(built), warnings
 
 
 def legs_from_session_trades(trades, flow_date, is_peak):

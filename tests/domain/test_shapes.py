@@ -7,9 +7,11 @@ import pytest
 
 from domain.shapes import (
     build_schedule,
+    combined_block_grid,
     generate_block_grid,
     monthly_block_rows,
     parse_shape,
+    segments_share_one_block,
     shape_label,
     shape_to_he,
 )
@@ -237,3 +239,69 @@ class TestBuildScheduleOnOffPeak:
         grid, excluded, missing, error = generate_block_grid(d, d, [d], "HL", 25)
         assert error is None
         assert not missing
+
+
+def seg(mw, shape):
+    return {"mw": mw, "shape": shape}
+
+
+class TestWhenQuantitiesShareOneBlock:
+    """A broker string naming a quantity more than once is usually one
+    block whose profile steps — the Shape and MW boxes only seed the
+    grid, and the grid is what gets written."""
+
+    def test_hour_ranges_share_one(self):
+        assert segments_share_one_block([seg(150, "9-12"), seg(100, "13-14")])
+
+    def test_and_so_do_the_single_day_products(self):
+        # 1x16 and 1x8 store their hours either way, so a block of their
+        # own buys nothing.
+        assert segments_share_one_block([seg(50, "1x16"), seg(25, "1x8")])
+
+    def test_a_lone_quantity_trivially_does(self):
+        assert segments_share_one_block([seg(50, "HL")])
+        assert segments_share_one_block([])
+
+    def test_but_hl_and_ll_each_need_their_own(self):
+        # The block's Shape is what stores the row as the word rather
+        # than the hours, and "HL" is not "7-22" on an off-peak day.
+        assert not segments_share_one_block([seg(50, "HL"), seg(25, "LL")])
+        assert not segments_share_one_block([seg(50, "ATC"), seg(25, "9-12")])
+
+    def test_and_so_do_quantities_whose_hours_overlap(self):
+        # No one profile to build: one would overwrite the other's MW
+        # without saying so.
+        assert not segments_share_one_block([seg(50, "1-6"), seg(25, "5-8")])
+        assert not segments_share_one_block([seg(50, "1x16"), seg(25, "9-12")])
+
+    def test_an_unreadable_shape_is_not_merged_over(self):
+        assert not segments_share_one_block([seg(50, "9-12"), seg(25, "banana")])
+
+
+class TestTheGridOfABlockThatSteps:
+    def test_each_quantity_lands_on_its_own_hours(self):
+        days = [date(2026, 9, 15), date(2026, 9, 16)]
+        grid, error = combined_block_grid(
+            days[0], days[-1], days, [seg(150, "9-12"), seg(100, "13-14")]
+        )
+        assert error is None
+        for _, row in grid.iterrows():
+            assert [h for h in range(1, 25) if row[str(h)] > 0] == [9, 10, 11, 12, 13, 14]
+            assert (row["9"], row["13"]) == (150.0, 100.0)
+
+    def test_it_needs_no_calendar_for_the_shapes_that_name_their_hours(self):
+        # 1x16 on a Saturday is sixteen hours on Saturday. Nothing here
+        # asks the WECC calendar anything, which is why this test is not
+        # marked db.
+        sat = date(2026, 9, 19)
+        grid, error = combined_block_grid(
+            sat, sat, [sat], [seg(50, "1x16"), seg(25, "1x8")]
+        )
+        assert error is None
+        row = grid.iloc[0]
+        assert row["12"] == 50.0 and row["3"] == 25.0
+
+    def test_a_bad_shape_is_reported_rather_than_half_built(self):
+        d = date(2026, 9, 15)
+        grid, error = combined_block_grid(d, d, [d], [seg(50, "9-12"), seg(25, "nope")])
+        assert grid is None and "nope" in error

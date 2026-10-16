@@ -20,6 +20,7 @@ Written against these real strings:
     NEVP buys 25mw he17-22 ncs Jul-Aug 28 at Navajo for $216
     NEVP buys 25mw he17-22 ncs Jul 28 at Navajo for $230
     APS sells 50MW ncs he17-22 at PV for $65 via BGC
+    epe sells 150mw he9-12 and 100mw he13-14 at FC $4
 
 Each extractor scans the whole string and blanks out the span it claims, so
 field order never matters — only a few extractors run in a fixed order to
@@ -190,6 +191,29 @@ FUZZY_CUTOFF = 0.8
 
 # Fields a string must supply; anything else falls back to a default.
 REQUIRED_FIELDS = ("counterparty", "direction", "mw", "shape", "location", "price")
+
+#: A quantity: "100MW", "12 MWS", "2.5mw".
+_MW_PATTERN = r"(\d+(?:\.\d+)?)\s*mws?\b"
+
+#: Every shape a quantity can carry, as one alternation. The hour range is
+#: listed before the single hour so "he9-12" isn't read as "he9" with "-12"
+#: left over.
+_SHAPE_TOKEN = (
+    r"1\s*x\s*(?:16|8)"
+    r"|h(?:e)?\s*\d{1,2}\s*-\s*(?:h(?:e)?\s*)?\d{1,2}"
+    r"|h(?:e)?\s*\d{1,2}"
+    r"|hl|ll|atc"
+)
+
+#: A shape sitting immediately after its MW — "150mw he9-12". Anchored, and
+#: only used when the string names more than one quantity; see
+#: _extract_segments.
+_SHAPE_AFTER_MW = re.compile(r"\s*(?:of\s+)?(" + _SHAPE_TOKEN + r")\b", re.I)
+
+#: What joins one segment to the next. Matched ending where the next
+#: quantity starts, so it is consumed with the segment rather than left to
+#: turn up in the "Ignored:" warning.
+_SEGMENT_JOIN = re.compile(r"\s*(?:and|&|\+|,|/)\s*$", re.I)
 
 
 @dataclass
@@ -549,6 +573,164 @@ def _derive_index_from_location(result):
     result.fields["index"] = ParsedField(node, f"@ index ({location})", "derived")
 
 
+def _shape_value(raw):
+    """A matched shape token written the way the Shape box wants it:
+    "HE9 - 12" -> "9-12", "1 x 16" -> "1x16", "hl" -> "HL"."""
+    text = re.sub(r"\s+", "", raw).upper()
+    m = re.fullmatch(r"1X(16|8)", text)
+    if m:
+        return f"1x{m.group(1)}"
+    m = re.fullmatch(r"H(?:E)?(\d{1,2})(?:-(?:H(?:E)?)?(\d{1,2}))?", text)
+    if m:
+        start_he, end_he = int(m.group(1)), m.group(2)
+        return f"{start_he}-{int(end_he)}" if end_he else str(start_he)
+    return text
+
+
+def _warn_single_day_shape(result, shape, source_text):
+    """A 1x16 or 1x8 covers one day and the string didn't say which.
+
+    Only silence needs flagging: a day named in the string is taken at its
+    word. The form's own default window is the whole trading session, and
+    these two products cover one day of it.
+    """
+    if shape in ("1x16", "1x8") and not result.get("start_date"):
+        result.warnings.append(
+            f"{source_text} covers a single day and the string doesn't say "
+            "which. The flow dates are left at their default — set them "
+            "before adding the trade."
+        )
+
+
+def _take_loose_shape(scanner, result):
+    """The shape of a string naming one quantity, from anywhere in it.
+
+    Loose because there is only one quantity it could belong to: the desk
+    writes "12 MWS PV HL" and "75mw of Non-caiso power for Q3 HL 2027" and
+    means the same thing by both. The single-day products are tried first,
+    being the most specific thing in the sentence — they are not HL and LL,
+    which ask the WECC calendar what kind of day it is where these name
+    their hours outright, weekend days included (domain.shapes).
+    """
+    m = scanner.take(_SINGLE_DAY_SHAPE_PATTERN)
+    if m:
+        shape = f"1x{m.group(1)}"
+        result.fields["shape"] = ParsedField(shape, m.group(0).strip())
+        _warn_single_day_shape(result, shape, m.group(0).strip())
+        return
+    # The "-end" half is optional so a single hour ("HE18") is read as a
+    # one-hour shape, same as typing "18" alone into the Shape box.
+    m = scanner.take(r"\bh(?:e)?\s*(\d{1,2})(?:\s*-\s*(?:h(?:e)?\s*)?(\d{1,2}))?\b")
+    if m:
+        start_he, end_he = m.group(1), m.group(2)
+        result.fields["shape"] = ParsedField(
+            f"{int(start_he)}-{int(end_he)}" if end_he else str(int(start_he)),
+            m.group(0).strip(),
+        )
+        return
+    m = scanner.take(r"\b(hl|ll|atc)\b")
+    if m:
+        result.fields["shape"] = ParsedField(m.group(1).upper(), m.group(0).strip())
+        return
+    result.errors.append(
+        "No shape found (expected HL, LL, ATC, 1x16, 1x8, or an hour range "
+        "like HE18-HE21)."
+    )
+
+
+def _paired_segments(scanner, quantities, result):
+    """Each quantity with the shape written right after it, or [] and an
+    error saying which one has none.
+
+    All-or-nothing, like every other refusal here: pairing by position
+    instead would be a guess that silently moves a trade's energy to the
+    wrong hours.
+    """
+    text = scanner.remaining
+    segments, spans = [], []
+    for index, m in enumerate(quantities):
+        shape = _SHAPE_AFTER_MW.match(text, m.end())
+        if shape is None:
+            result.errors.append(
+                f"{m.group(0).strip()} has no shape after it. A string naming "
+                "more than one quantity needs a shape on each, like "
+                "'150mw he9-12 and 100mw he13-14'."
+            )
+            return []
+        value = _shape_value(shape.group(1))
+        source_text = text[m.start():shape.end()].strip()
+        _warn_single_day_shape(result, value, source_text)
+        segments.append(
+            {"mw": float(m.group(1)), "shape": value, "source_text": source_text}
+        )
+        start = m.start()
+        if index:
+            join = _SEGMENT_JOIN.search(text, 0, start)
+            if join:
+                start = join.start()
+        spans.append((start, shape.end()))
+    for start, end in spans:
+        scanner._consume(start, end)
+    return segments
+
+
+def _extract_segments(scanner, result):
+    """The MW quantities the string names, each with the shape it runs on.
+
+    Usually one, and then the two are read apart (_take_loose_shape).
+    **A string naming more than one is read strictly**: every quantity has
+    to carry its own shape immediately after it, because with two of each
+    loose in one sentence nothing says which goes with which.
+
+    Each segment becomes its own schedule block on the form, and so its own
+    `BilateralTrades` row — which is the format the back office's readers
+    expect and the reason the trade is not folded into a single row here.
+    It is still one trade: the board shows it as one square (see
+    domain.matching.legs_from_db_rows) and the desk thinks of it as one.
+
+    `segments` is always set when both an MW and a shape were found, so a
+    caller never has to tell the one-segment case apart; `mw` and `shape`
+    carry the first segment, which is what everything that predates splits
+    reads.
+    """
+    quantities = scanner.find_all(_MW_PATTERN)
+    if len(quantities) > 1:
+        segments = _paired_segments(scanner, quantities, result)
+        if not segments:
+            return
+        first = segments[0]
+        result.fields["mw"] = ParsedField(first["mw"], first["source_text"])
+        result.fields["shape"] = ParsedField(first["shape"], first["source_text"])
+    else:
+        if quantities:
+            m = quantities[0]
+            scanner.take_at(m)
+            result.fields["mw"] = ParsedField(float(m.group(1)), m.group(0).strip())
+        else:
+            result.errors.append(
+                "No MW quantity found (expected something like '100MW')."
+            )
+        _take_loose_shape(scanner, result)
+        if not (result.get("mw") and result.get("shape")):
+            return
+        # Already on the result, each with its own span of the string
+        # behind it; only the list view of them is new.
+        segments = [
+            {
+                "mw": result.get("mw"),
+                "shape": result.get("shape"),
+                "source_text": (
+                    f'{result.fields["mw"].source_text} '
+                    f'{result.fields["shape"].source_text}'
+                ),
+            }
+        ]
+
+    result.fields["segments"] = ParsedField(
+        segments, " and ".join(seg["source_text"] for seg in segments), "derived"
+    )
+
+
 def parse_trade_string(
     text,
     counterparties=(),
@@ -660,52 +842,7 @@ def parse_trade_string(
             m.group(1).upper(), m.group(0).strip()
         )
 
-    m = scanner.take(r"(\d+(?:\.\d+)?)\s*mws?\b")
-    if m:
-        result.fields["mw"] = ParsedField(float(m.group(1)), m.group(0).strip())
-    else:
-        result.errors.append("No MW quantity found (expected something like '100MW').")
-
-    # The desk's two single-day products, tried first because they are the
-    # most specific thing in the sentence. They are not HL and LL: those
-    # ask the WECC calendar what kind of day it is, and these name their
-    # hours outright, weekend days included (domain.shapes).
-    m = scanner.take(_SINGLE_DAY_SHAPE_PATTERN)
-    if m:
-        result.fields["shape"] = ParsedField(f"1x{m.group(1)}", m.group(0).strip())
-        if not result.get("start_date"):
-            # A day named in the string is taken at its word; it is only
-            # silence that needs flagging, because the form's own default
-            # window is the whole trading session and these cover one day
-            # of it.
-            result.warnings.append(
-                f"{m.group(0).strip()} covers a single day and the string "
-                "doesn't say which. The flow dates are left at their "
-                f"default — set them before adding the trade."
-            )
-    else:
-        # The "-end" half is optional so a single hour ("HE18") is read as
-        # a one-hour shape, same as typing "18" alone into the Shape box.
-        m = scanner.take(
-            r"\bh(?:e)?\s*(\d{1,2})(?:\s*-\s*(?:h(?:e)?\s*)?(\d{1,2}))?\b"
-        )
-        if m:
-            start_he, end_he = m.group(1), m.group(2)
-            shape_str = (
-                f"{int(start_he)}-{int(end_he)}" if end_he else str(int(start_he))
-            )
-            result.fields["shape"] = ParsedField(shape_str, m.group(0).strip())
-        else:
-            m = scanner.take(r"\b(hl|ll|atc)\b")
-            if m:
-                result.fields["shape"] = ParsedField(
-                    m.group(1).upper(), m.group(0).strip()
-                )
-            else:
-                result.errors.append(
-                    "No shape found (expected HL, LL, ATC, 1x16, 1x8, or an "
-                    "hour range like HE18-HE21)."
-                )
+    _extract_segments(scanner, result)
 
     if scanner.take(r"\bnws\b"):
         result.fields["is_nws"] = ParsedField(True, "nws")
